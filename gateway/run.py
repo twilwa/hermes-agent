@@ -182,6 +182,15 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 logger = logging.getLogger(__name__)
 
 
+def _install_signal_handlers(loop: asyncio.AbstractEventLoop, handler) -> None:
+    """Install shutdown signal handlers when the current runtime allows it."""
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, handler)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     from hermes_cli.runtime_provider import (
@@ -4497,11 +4506,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
     
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            pass
+    _install_signal_handlers(loop, signal_handler)
     
     # Start the gateway
     success = await runner.start()

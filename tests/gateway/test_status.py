@@ -22,6 +22,7 @@ class TestGatewayPidState:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
         pid_path.write_text(str(os.getpid()))
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "python -m pytest")
 
         assert status.get_running_pid() is None
         assert not pid_path.exists()
@@ -46,6 +47,23 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+    def test_write_runtime_status_refreshes_process_metadata(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "gateway_state": "starting",
+            "platforms": {},
+        }))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid()
+        assert payload["start_time"] == status._get_process_start_time(os.getpid())
+        assert payload["gateway_state"] == "running"
 
 
 class TestScopedLocks:

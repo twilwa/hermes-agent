@@ -5,7 +5,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _install_signal_handlers
 from gateway.session import SessionSource, build_session_key
 
 
@@ -104,3 +104,12 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._pending_messages == {}
     assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
+
+
+def test_install_signal_handlers_ignores_background_thread_runtime_error():
+    loop = MagicMock()
+    loop.add_signal_handler.side_effect = RuntimeError("set_wakeup_fd only works in main thread")
+
+    _install_signal_handlers(loop, lambda: None)
+
+    assert loop.add_signal_handler.call_count == 2
