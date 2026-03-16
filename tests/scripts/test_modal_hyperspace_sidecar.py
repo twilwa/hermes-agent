@@ -34,3 +34,82 @@ def test_sidecar_command_metadata_uses_modal_cli_paths():
     assert metadata["volume"] == module.VOLUME_NAME
     assert metadata["bootstrap"] == f"python -m modal run {module.SCRIPT_PATH}"
     assert metadata["shell"] == f"python -m modal shell {module.SCRIPT_PATH}::hyperspace_sidecar --cmd /bin/bash"
+
+
+def test_execute_hyperspace_command_runs_in_sidecar_environment(monkeypatch):
+    module = _load_module()
+    captured = {}
+
+    class _CompletedProcess:
+        returncode = 0
+        stdout = "gpu ready\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        module,
+        "_ensure_sidecar_directories",
+        lambda: captured.setdefault("bootstrapped", True),
+    )
+    monkeypatch.setattr(
+        module.state_volume,
+        "commit",
+        lambda: captured.setdefault("committed", True),
+    )
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _CompletedProcess()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module._execute_hyperspace_command(
+        command="nvidia-smi",
+        timeout_seconds=42,
+        bootstrap=True,
+    )
+
+    assert result["success"] is True
+    assert result["returncode"] == 0
+    assert result["stdout"] == "gpu ready\n"
+    assert captured["bootstrapped"] is True
+    assert captured["committed"] is True
+    assert captured["args"] == ["bash", "-lc", "nvidia-smi"]
+    assert captured["kwargs"]["timeout"] == 42
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["env"]["HOME"] == module.HOME_DIR
+
+
+def test_execute_hyperspace_command_surfaces_timeout(monkeypatch):
+    module = _load_module()
+    captured = {}
+
+    monkeypatch.setattr(
+        module.state_volume,
+        "commit",
+        lambda: captured.setdefault("committed", True),
+    )
+
+    def fake_run(args, **kwargs):
+        raise module.subprocess.TimeoutExpired(
+            cmd=args,
+            timeout=kwargs["timeout"],
+            output="partial stdout",
+            stderr="partial stderr",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module._execute_hyperspace_command(
+        command="sleep 999",
+        timeout_seconds=5,
+        bootstrap=False,
+    )
+
+    assert result["success"] is False
+    assert result["returncode"] == 124
+    assert result["timed_out"] is True
+    assert result["stdout"] == "partial stdout"
+    assert result["stderr"] == "partial stderr"
+    assert captured["committed"] is True

@@ -78,7 +78,7 @@ def _prompt_yes_no(question: str, default: bool = True) -> bool:
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
-    ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
+    ("terminal",        "💻 Terminal & Processes",      "terminal, process, Hyperspace GPU sidecar"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
@@ -92,7 +92,7 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("rl",              "🧪 RL Training",               "Tinker-Atropos or Prime RL tools"),
+    ("rl",              "🧪 RL Training",               "Prime/Tinker RL tools plus Hyperspace GPU sidecar"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+from typing import Any
 
 import modal
 
@@ -41,6 +43,69 @@ def _sidecar_metadata() -> dict[str, str]:
     }
 
 
+def _ensure_sidecar_directories() -> None:
+    for path in (HOME_DIR, CONFIG_DIR, DATA_DIR, CACHE_DIR):
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def _execute_hyperspace_command(
+    command: str,
+    timeout_seconds: int,
+    bootstrap: bool,
+) -> dict[str, Any]:
+    command = (command or "").strip()
+    timeout_seconds = max(1, int(timeout_seconds))
+    metadata = _sidecar_metadata()
+
+    if not command:
+        return {
+            "success": True,
+            "metadata": metadata,
+        }
+
+    try:
+        if bootstrap:
+            _ensure_sidecar_directories()
+
+        completed = subprocess.run(
+            ["bash", "-lc", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env={**os.environ, **_sidecar_env()},
+        )
+        result = {
+            "success": completed.returncode == 0,
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "metadata": metadata,
+        }
+    except subprocess.TimeoutExpired as exc:
+        result = {
+            "success": False,
+            "command": command,
+            "returncode": 124,
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "",
+            "timed_out": True,
+            "error": f"Command timed out after {timeout_seconds} seconds",
+            "metadata": metadata,
+        }
+    except Exception as exc:
+        result = {
+            "success": False,
+            "command": command,
+            "error": f"{type(exc).__name__}: {exc}",
+            "metadata": metadata,
+        }
+    finally:
+        state_volume.commit()
+
+    return result
+
+
 state_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -58,12 +123,30 @@ app = modal.App(APP_NAME)
     timeout=8 * 60 * 60,
 )
 def hyperspace_sidecar() -> dict[str, str]:
-    for path in (HOME_DIR, CONFIG_DIR, DATA_DIR, CACHE_DIR):
-        Path(path).mkdir(parents=True, exist_ok=True)
+    _ensure_sidecar_directories()
+    state_volume.commit()
 
     metadata = _sidecar_metadata()
     metadata["path"] = os.environ["PATH"]
     return metadata
+
+
+@app.function(
+    image=image,
+    gpu="L4",
+    volumes={STATE_ROOT: state_volume},
+    timeout=8 * 60 * 60,
+)
+def run_hyperspace_command(
+    command: str,
+    timeout_seconds: int = 900,
+    bootstrap: bool = True,
+) -> dict[str, Any]:
+    return _execute_hyperspace_command(
+        command=command,
+        timeout_seconds=timeout_seconds,
+        bootstrap=bootstrap,
+    )
 
 
 @app.local_entrypoint()
