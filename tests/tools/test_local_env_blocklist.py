@@ -124,7 +124,6 @@ class TestProviderEnvBlocklist:
             "FIRECRAWL_API_KEY": "fc-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
-            "GITHUB_TOKEN": "ghp_secret",
             "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
             "GATEWAY_ALLOWED_USERS": "alice,bob",
@@ -133,6 +132,12 @@ class TestProviderEnvBlocklist:
 
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
+
+    def test_github_token_is_preserved_for_subprocess_auth(self):
+        """GITHUB_TOKEN stays available so subprocesses can authenticate with gh."""
+        result_env = _run_with_env(extra_os_env={"GITHUB_TOKEN": "ghp_secret"})
+
+        assert result_env["GITHUB_TOKEN"] == "ghp_secret"
 
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
@@ -236,6 +241,8 @@ class TestBlocklistCoverage:
 
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
+            if name == "GITHUB_TOKEN":
+                continue
             if category in {"tool", "messaging"}:
                 assert name in _HERMES_PROVIDER_ENV_BLOCKLIST, (
                     f"Optional env var {name} (category={category}) missing from blocklist"
@@ -282,3 +289,6 @@ class TestBlocklistCoverage:
             "GITHUB_APP_INSTALLATION_ID",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_github_token_is_not_in_blocklist(self):
+        assert "GITHUB_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST

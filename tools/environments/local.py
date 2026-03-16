@@ -118,6 +118,9 @@ def _build_provider_env_blocklist() -> frozenset:
         "GITHUB_APP_PRIVATE_KEY_PATH",
         "GITHUB_APP_INSTALLATION_ID",
     })
+    # Keep the raw GitHub PAT available to subprocess shells so users can
+    # authenticate gh explicitly, while still blocking Hermes-specific aliases.
+    blocked.discard("GITHUB_TOKEN")
     return frozenset(blocked)
 
 
