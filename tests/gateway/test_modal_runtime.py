@@ -6,6 +6,7 @@ from gateway.modal_runtime import (
     sanitize_config_for_modal,
     sanitize_env_text_for_modal,
 )
+from scripts.modal_gateway import _named_secret_names
 
 
 def test_sanitize_config_for_modal_forces_local_terminal_and_drops_local_urls():
@@ -84,3 +85,17 @@ def test_normalize_github_token_env_aliases_nonstandard_secret_keys(monkeypatch)
 
     assert os.environ["GITHUB_TOKEN"] == "secret-value"
     assert os.environ["GH_TOKEN"] == "secret-value"
+
+
+def test_named_secret_names_include_github_and_prime_by_default(monkeypatch):
+    monkeypatch.delenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("HERMES_MODAL_PRIME_API_KEY_SECRET", raising=False)
+
+    assert _named_secret_names() == ["github-token", "PRIME_API_KEY"]
+
+
+def test_named_secret_names_dedupe_and_skip_empty_values(monkeypatch):
+    monkeypatch.setenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "shared-secret")
+    monkeypatch.setenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "shared-secret")
+
+    assert _named_secret_names() == ["shared-secret"]

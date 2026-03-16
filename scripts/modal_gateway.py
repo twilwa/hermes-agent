@@ -20,7 +20,6 @@ REMOTE_HERMES_HOME = f"{REMOTE_STATE_ROOT}/home"
 
 APP_NAME = os.getenv("HERMES_MODAL_APP_NAME", "hermes-gateway")
 VOLUME_NAME = os.getenv("HERMES_MODAL_VOLUME_NAME", f"{APP_NAME}-state")
-GITHUB_TOKEN_SECRET_NAME = os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip()
 
 
 def _read_optional_file(path: Path) -> str | None:
@@ -51,11 +50,23 @@ def _build_runtime_secret_env() -> dict[str, str]:
     return payload
 
 
+def _named_secret_names() -> list[str]:
+    """Return deploy-time named Modal secrets to attach to the gateway container."""
+    secret_names: list[str] = []
+    for value in (
+        os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip(),
+        os.getenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "PRIME_API_KEY").strip(),
+    ):
+        if value and value not in secret_names:
+            secret_names.append(value)
+    return secret_names
+
+
 runtime_secret_env = _build_runtime_secret_env()
 runtime_secret = modal.Secret.from_dict(runtime_secret_env)
 named_secrets = [runtime_secret]
-if GITHUB_TOKEN_SECRET_NAME:
-    named_secrets.append(modal.Secret.from_name(GITHUB_TOKEN_SECRET_NAME))
+for secret_name in _named_secret_names():
+    named_secrets.append(modal.Secret.from_name(secret_name))
 state_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 image = (
