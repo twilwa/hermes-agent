@@ -278,12 +278,26 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Tinker / Atropos",
-                "tag": "RL training platform",
+                "tag": "Local run-api + trainer workflow",
                 "env_vars": [
                     {"key": "TINKER_API_KEY", "prompt": "Tinker API key", "url": "https://tinker-console.thinkingmachines.ai/keys"},
                     {"key": "WANDB_API_KEY", "prompt": "WandB API key", "url": "https://wandb.ai/authorize"},
                 ],
-                "post_setup": "rl_training",
+                "post_setup": "rl_training_tinker",
+                "config_section": "rl",
+                "config_key": "provider",
+                "config_value": "tinker",
+            },
+            {
+                "name": "Prime",
+                "tag": "Hosted RL and eval credentials",
+                "env_vars": [
+                    {"key": "PRIME_API_KEY", "prompt": "Prime API key", "url": "https://app.primeintellect.ai/"},
+                ],
+                "post_setup": "rl_training_prime",
+                "config_section": "rl",
+                "config_key": "provider",
+                "config_value": "prime",
             },
         ],
     },
@@ -318,7 +332,7 @@ def _run_post_setup(post_setup_key: str):
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
 
-    elif post_setup_key == "rl_training":
+    elif post_setup_key == "rl_training_tinker":
         try:
             __import__("tinker_atropos")
         except ImportError:
