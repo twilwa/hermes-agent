@@ -20,6 +20,7 @@ REMOTE_HERMES_HOME = f"{REMOTE_STATE_ROOT}/home"
 
 APP_NAME = os.getenv("HERMES_MODAL_APP_NAME", "hermes-gateway")
 VOLUME_NAME = os.getenv("HERMES_MODAL_VOLUME_NAME", f"{APP_NAME}-state")
+GITHUB_TOKEN_SECRET_NAME = os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip()
 
 
 def _read_optional_file(path: Path) -> str | None:
@@ -52,6 +53,9 @@ def _build_runtime_secret_env() -> dict[str, str]:
 
 runtime_secret_env = _build_runtime_secret_env()
 runtime_secret = modal.Secret.from_dict(runtime_secret_env)
+named_secrets = [runtime_secret]
+if GITHUB_TOKEN_SECRET_NAME:
+    named_secrets.append(modal.Secret.from_name(GITHUB_TOKEN_SECRET_NAME))
 state_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 image = (
@@ -82,7 +86,7 @@ app = modal.App(APP_NAME)
 @app.function(
     image=image,
     volumes={REMOTE_STATE_ROOT: state_volume},
-    secrets=[runtime_secret],
+    secrets=named_secrets,
     env={
         "PYTHONPATH": REMOTE_PROJECT_ROOT,
         "HERMES_MODAL_PROJECT_ROOT": REMOTE_PROJECT_ROOT,
