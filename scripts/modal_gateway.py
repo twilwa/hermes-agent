@@ -20,7 +20,6 @@ REMOTE_HERMES_HOME = f"{REMOTE_STATE_ROOT}/home"
 
 APP_NAME = os.getenv("HERMES_MODAL_APP_NAME", "hermes-gateway")
 VOLUME_NAME = os.getenv("HERMES_MODAL_VOLUME_NAME", f"{APP_NAME}-state")
-GITHUB_TOKEN_SECRET_NAME = os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip()
 
 
 def _read_optional_file(path: Path) -> str | None:
