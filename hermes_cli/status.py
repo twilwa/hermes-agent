@@ -63,6 +63,24 @@ def _configured_model_label(config: dict) -> str:
     return model or "(not set)"
 
 
+def _configured_rl_backend_label(config: dict) -> str:
+    rl_config = config.get("rl")
+    if not isinstance(rl_config, dict):
+        rl_config = {}
+
+    selected = (rl_config.get("provider") or "").strip().lower()
+    if selected == "prime":
+        return "Prime"
+    if selected == "tinker":
+        return "Tinker / Atropos"
+
+    if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
+        return "Tinker / Atropos (auto)"
+    if get_env_value("PRIME_API_KEY"):
+        return "Prime (auto)"
+    return "(not set)"
+
+
 def _effective_provider_label() -> str:
     """Return the provider label matching current CLI runtime resolution."""
     requested = resolve_requested_provider()
@@ -105,6 +123,7 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+    print(f"  RL backend:   {_configured_rl_backend_label(config)}")
     
     # =========================================================================
     # API Keys
@@ -122,6 +141,7 @@ def show_status(args):
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
+        "Prime": "PRIME_API_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
@@ -235,6 +255,14 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "modal":
+        modal_gpu = os.getenv("TERMINAL_CONTAINER_GPU", "")
+        if not modal_gpu:
+            try:
+                modal_gpu = load_config().get("terminal", {}).get("container_gpu", "")
+            except Exception:
+                modal_gpu = ""
+        print(f"  Modal GPU:    {modal_gpu or '(not set)'}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

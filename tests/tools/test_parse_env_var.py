@@ -8,7 +8,7 @@ import pytest
 import sys
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
 _tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import _parse_env_var
+from tools.terminal_tool import _get_env_config, _parse_env_var
 
 
 class TestParseEnvVar:
@@ -62,3 +62,7 @@ class TestParseEnvVar:
         with patch.dict("os.environ", {"TERMINAL_DOCKER_VOLUMES": "not json"}):
             with pytest.raises(ValueError, match="valid JSON"):
                 _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+
+    def test_get_env_config_includes_modal_gpu(self):
+        with patch.dict("os.environ", {"TERMINAL_CONTAINER_GPU": "L4"}):
+            assert _get_env_config()["container_gpu"] == "L4"

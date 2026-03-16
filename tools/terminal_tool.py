@@ -425,6 +425,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     Supported override keys:
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
+        - container_gpu: str -- Modal GPU type, for example "L4"
         - cwd: str -- Working directory inside the sandbox
 
     Args:
@@ -517,6 +518,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
+        "container_gpu": os.getenv("TERMINAL_CONTAINER_GPU", "").strip(),
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
@@ -545,6 +547,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     cpu = cc.get("container_cpu", 1)
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)
+    gpu = (cc.get("container_gpu") or "").strip()
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
 
@@ -581,7 +584,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
                 pass
-        
+        if gpu:
+            sandbox_kwargs["gpu"] = gpu
+
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
@@ -946,6 +951,7 @@ def terminal_tool(
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
+                                "container_gpu": overrides.get("container_gpu") or config.get("container_gpu", ""),
                                 "container_persistent": config.get("container_persistent", True),
                                 "docker_volumes": config.get("docker_volumes", []),
                             }

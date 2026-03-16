@@ -113,6 +113,7 @@ DEFAULT_CONFIG = {
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
+        "container_gpu": "",            # Modal GPU type, for example "L4"
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
@@ -484,6 +485,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "WandB API key",
         "url": "https://wandb.ai/authorize",
         "tools": ["rl_get_results", "rl_check_status"],
+        "password": True,
+        "category": "tool",
+    },
+    "PRIME_API_KEY": {
+        "description": "Prime API key for hosted RL training and evaluation",
+        "prompt": "Prime API key",
+        "url": "https://app.primeintellect.ai/",
+        "tools": ["rl"],
         "password": True,
         "category": "tool",
     },
@@ -1226,6 +1235,8 @@ def show_config():
         print(f"  Image:        {terminal.get('singularity_image', 'docker://python:3.11')}")
     elif terminal.get('backend') == 'modal':
         print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
+        if terminal.get('container_gpu'):
+            print(f"  Modal GPU:    {terminal.get('container_gpu')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
     elif terminal.get('backend') == 'daytona':
@@ -1339,7 +1350,7 @@ def set_config_value(key: str, value: str):
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
-        'TINKER_API_KEY',
+        'TINKER_API_KEY', 'PRIME_API_KEY',
     ]
     
     if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
@@ -1395,6 +1406,7 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
+        "terminal.container_gpu": "TERMINAL_CONTAINER_GPU",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }

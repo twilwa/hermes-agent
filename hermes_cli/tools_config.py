@@ -92,7 +92,7 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
+    ("rl",              "🧪 RL Training",               "Tinker-Atropos or Prime RL tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
@@ -224,12 +224,26 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Tinker / Atropos",
-                "tag": "RL training platform",
+                "tag": "Local run-api + trainer workflow",
                 "env_vars": [
                     {"key": "TINKER_API_KEY", "prompt": "Tinker API key", "url": "https://tinker-console.thinkingmachines.ai/keys"},
                     {"key": "WANDB_API_KEY", "prompt": "WandB API key", "url": "https://wandb.ai/authorize"},
                 ],
-                "post_setup": "rl_training",
+                "post_setup": "rl_training_tinker",
+                "config_section": "rl",
+                "config_key": "provider",
+                "config_value": "tinker",
+            },
+            {
+                "name": "Prime",
+                "tag": "Hosted RL and eval credentials",
+                "env_vars": [
+                    {"key": "PRIME_API_KEY", "prompt": "Prime API key", "url": "https://app.primeintellect.ai/"},
+                ],
+                "post_setup": "rl_training_prime",
+                "config_section": "rl",
+                "config_key": "provider",
+                "config_value": "prime",
             },
         ],
     },
@@ -264,7 +278,7 @@ def _run_post_setup(post_setup_key: str):
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
 
-    elif post_setup_key == "rl_training":
+    elif post_setup_key == "rl_training_tinker":
         try:
             __import__("tinker_atropos")
         except ImportError:
@@ -292,6 +306,13 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    tinker-atropos submodule not found - run:")
                 _print_info("      git submodule update --init --recursive")
                 _print_info('      uv pip install -e "./tinker-atropos"')
+    elif post_setup_key == "rl_training_prime":
+        if shutil.which("prime"):
+            _print_success("    prime CLI already available")
+        else:
+            _print_warning("    prime CLI not found - install it manually:")
+            _print_info("      uv tool install prime")
+            _print_info("      uv pip install verifiers")
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -394,9 +415,15 @@ def _toolset_has_keys(ts_key: str) -> bool:
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+        selected_provider = _get_selected_provider(ts_key, cat, config)
+        if selected_provider:
+            return _provider_is_configured(selected_provider)
         for provider in cat.get("providers", []):
-            env_vars = provider.get("env_vars", [])
-            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
+            if _provider_is_configured(provider):
                 return True
         return False
 
@@ -517,6 +544,64 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
 # ─── Provider-Aware Configuration ────────────────────────────────────────────
 
+def _provider_is_configured(provider: dict) -> bool:
+    env_vars = provider.get("env_vars", [])
+    if not env_vars:
+        return True
+    return all(get_env_value(var["key"]) for var in env_vars)
+
+
+def _provider_setting_value(ts_key: str, provider: dict, config: dict):
+    if provider.get("tts_provider"):
+        return config.get("tts", {}).get("provider", "edge")
+
+    section = provider.get("config_section")
+    key = provider.get("config_key")
+    if section and key:
+        section_data = config.get(section, {})
+        if isinstance(section_data, dict):
+            value = section_data.get(key)
+            if value is not None:
+                return value
+
+    if ts_key == "rl":
+        if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
+            return "tinker"
+        if get_env_value("PRIME_API_KEY"):
+            return "prime"
+
+    return None
+
+
+def _provider_is_active(ts_key: str, provider: dict, config: dict) -> bool:
+    current = _provider_setting_value(ts_key, provider, config)
+    if provider.get("tts_provider"):
+        return current == provider["tts_provider"]
+    expected = provider.get("config_value")
+    if expected is None:
+        return False
+    return current == expected
+
+
+def _set_provider_selection(provider: dict, config: dict) -> None:
+    if provider.get("tts_provider"):
+        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+        return
+
+    section = provider.get("config_section")
+    key = provider.get("config_key")
+    value = provider.get("config_value")
+    if not section or not key or value is None:
+        return
+    config.setdefault(section, {})[key] = value
+
+
+def _get_selected_provider(ts_key: str, cat: dict, config: dict) -> Optional[dict]:
+    for provider in cat.get("providers", []):
+        if _provider_is_active(ts_key, provider, config):
+            return provider
+    return None
+
 def _configure_toolset(ts_key: str, config: dict):
     """Configure a toolset - provider selection + API keys.
     
@@ -573,14 +658,10 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         for p in providers:
             tag = f" ({p['tag']})" if p.get("tag") else ""
             configured = ""
-            env_vars = p.get("env_vars", [])
-            if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
-                    configured = " [active]"
-                elif not env_vars:
-                    configured = " [active]" if config.get("tts", {}).get("provider", "edge") == p.get("tts_provider", "") else ""
-                else:
-                    configured = " [configured]"
+            if _provider_is_active(ts_key, p, config):
+                configured = " [active]"
+            elif _provider_is_configured(p):
+                configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
         # Add skip option
@@ -589,13 +670,11 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # Detect current provider as default
         default_idx = 0
         for i, p in enumerate(providers):
-            if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
+            if _provider_is_active(ts_key, p, config):
                 default_idx = i
                 break
-            env_vars = p.get("env_vars", [])
-            if env_vars and all(get_env_value(v["key"]) for v in env_vars):
+            if _provider_is_configured(p):
                 default_idx = i
-                break
 
         provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
 
@@ -611,9 +690,7 @@ def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
 
-    # Set TTS provider in config if applicable
-    if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+    _set_provider_selection(provider, config)
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -765,25 +842,19 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
         for p in providers:
             tag = f" ({p['tag']})" if p.get("tag") else ""
             configured = ""
-            env_vars = p.get("env_vars", [])
-            if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
-                    configured = " [active]"
-                elif not env_vars:
-                    configured = ""
-                else:
-                    configured = " [configured]"
+            if _provider_is_active(ts_key, p, config):
+                configured = " [active]"
+            elif _provider_is_configured(p):
+                configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
         default_idx = 0
         for i, p in enumerate(providers):
-            if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
+            if _provider_is_active(ts_key, p, config):
                 default_idx = i
                 break
-            env_vars = p.get("env_vars", [])
-            if env_vars and all(get_env_value(v["key"]) for v in env_vars):
+            if _provider_is_configured(p):
                 default_idx = i
-                break
 
         provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
         _reconfigure_provider(providers[provider_idx], config)
@@ -793,8 +864,8 @@ def _reconfigure_provider(provider: dict, config: dict):
     """Reconfigure a provider - update API keys."""
     env_vars = provider.get("env_vars", [])
 
+    _set_provider_selection(provider, config)
     if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if not env_vars:

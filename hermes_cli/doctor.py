@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, get_env_value, load_config
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -32,6 +32,27 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+
+
+def _configured_rl_backend() -> str:
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    rl_config = config.get("rl")
+    if not isinstance(rl_config, dict):
+        rl_config = {}
+
+    selected = (rl_config.get("provider") or "").strip().lower()
+    if selected in {"prime", "tinker"}:
+        return selected
+
+    if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
+        return "tinker"
+    if get_env_value("PRIME_API_KEY"):
+        return "prime"
+    return ""
 
 
 _PROVIDER_ENV_HINTS = (
@@ -627,20 +648,32 @@ def run_doctor(args):
     else:
         check_warn("mini-swe-agent not found", "(run: git submodule update --init --recursive)")
     
-    # tinker-atropos (RL training backend)
-    tinker_dir = PROJECT_ROOT / "tinker-atropos"
-    if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
-        if py_version >= (3, 11):
-            try:
-                __import__("tinker_atropos")
-                check_ok("tinker-atropos", "(RL training backend)")
-            except ImportError:
-                check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
-                issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
+    # RL backend
+    rl_backend = _configured_rl_backend()
+    if rl_backend == "prime":
+        if get_env_value("PRIME_API_KEY"):
+            if shutil.which("prime"):
+                check_ok("prime CLI", "(RL training backend)")
+            else:
+                check_warn("prime CLI not found", "(run: uv tool install prime)")
+                issues.append("Install prime CLI: uv tool install prime")
         else:
-            check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
+            check_warn("Prime API key not configured", "(set PRIME_API_KEY)")
+            issues.append("Set PRIME_API_KEY for Prime RL")
     else:
-        check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
+        tinker_dir = PROJECT_ROOT / "tinker-atropos"
+        if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
+            if py_version >= (3, 11):
+                try:
+                    __import__("tinker_atropos")
+                    check_ok("tinker-atropos", "(RL training backend)")
+                except ImportError:
+                    check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
+                    issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
+            else:
+                check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
+        else:
+            check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
     
     # =========================================================================
     # Check: Tool Availability

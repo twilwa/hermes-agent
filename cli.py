@@ -161,6 +161,7 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "container_gpu": "",
             "docker_volumes": [],  # host:container volume mounts for Docker backend
         },
         "browser": {
@@ -325,6 +326,7 @@ def load_cli_config() -> Dict[str, Any]:
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_gpu": "TERMINAL_CONTAINER_GPU",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",

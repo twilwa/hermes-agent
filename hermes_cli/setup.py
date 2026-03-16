@@ -52,6 +52,35 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
     config["model"] = model_cfg
 
 
+def _rl_provider_status(config: Dict[str, Any]) -> tuple[str, bool, Optional[str]]:
+    rl_config = config.get("rl", {})
+    if not isinstance(rl_config, dict):
+        rl_config = {}
+
+    selected = (rl_config.get("provider") or "").strip().lower()
+    has_prime = bool(get_env_value("PRIME_API_KEY"))
+    has_tinker = bool(get_env_value("TINKER_API_KEY"))
+    has_wandb = bool(get_env_value("WANDB_API_KEY"))
+
+    if selected == "prime":
+        return ("RL Training (Prime)", has_prime, None if has_prime else "PRIME_API_KEY")
+
+    if selected == "tinker":
+        if has_tinker and has_wandb:
+            return ("RL Training (Tinker)", True, None)
+        if has_tinker:
+            return ("RL Training (Tinker)", False, "WANDB_API_KEY")
+        return ("RL Training (Tinker)", False, "TINKER_API_KEY")
+
+    if has_tinker and has_wandb:
+        return ("RL Training (Tinker)", True, None)
+    if has_prime:
+        return ("RL Training (Prime)", True, None)
+    if has_tinker:
+        return ("RL Training (Tinker)", False, "WANDB_API_KEY")
+    return ("RL Training", False, "PRIME_API_KEY or TINKER_API_KEY")
+
+
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
@@ -481,13 +510,8 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
-    # Tinker + WandB (RL training)
-    if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", True, None))
-    elif get_env_value("TINKER_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", False, "WANDB_API_KEY"))
-    else:
-        tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
+    # RL training provider
+    tool_status.append(_rl_provider_status(config))
 
     # Home Assistant
     if get_env_value("HASS_TOKEN"):
