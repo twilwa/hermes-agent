@@ -35,6 +35,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_env_key(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
 def _strip_wrapping_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1]
@@ -110,6 +114,27 @@ def _decode_base64_env(name: str) -> Optional[str]:
     if not payload:
         return None
     return base64.b64decode(payload).decode("utf-8")
+
+
+def normalize_github_token_env() -> None:
+    """Alias common GitHub token secret keys to the names Hermes and gh expect."""
+    if os.environ.get("GITHUB_TOKEN") and os.environ.get("GH_TOKEN"):
+        return
+
+    token_value: Optional[str] = None
+    for key, value in os.environ.items():
+        if not value:
+            continue
+        normalized = _normalize_env_key(key)
+        if normalized in {"githubtoken", "ghtoken"}:
+            token_value = value
+            break
+
+    if not token_value:
+        return
+
+    os.environ.setdefault("GITHUB_TOKEN", token_value)
+    os.environ.setdefault("GH_TOKEN", token_value)
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -280,6 +305,7 @@ class ModalGatewayService:
     def _run_gateway(self) -> None:
         os.environ["HERMES_HOME"] = str(self.hermes_home)
         os.environ["HERMES_MODAL_HOSTED"] = "1"
+        normalize_github_token_env()
         os.chdir(self.project_root)
 
         try:
