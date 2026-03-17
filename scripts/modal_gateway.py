@@ -56,6 +56,7 @@ def _named_secret_names() -> list[str]:
     for value in (
         os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip(),
         os.getenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "PRIME_API_KEY").strip(),
+        os.getenv("HERMES_MODAL_FIRECRAWL_API_KEY_SECRET", "FIRECRAWL_API_KEY").strip(),
     ):
         if value and value not in secret_names:
             secret_names.append(value)

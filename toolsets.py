@@ -96,8 +96,8 @@ TOOLSETS = {
     },
     
     "terminal": {
-        "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "description": "Terminal/command execution, process management, and the Modal Hyperspace GPU sidecar",
+        "tools": ["terminal", "process", "hyperspace_sidecar", "hyperspace"],
         "includes": []
     },
     
@@ -137,13 +137,14 @@ TOOLSETS = {
     },
     
     "rl": {
-        "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
+        "description": "RL training tools for Prime or Tinker workflows, plus the Modal L4 Hyperspace sidecar",
         "tools": [
             "rl_list_environments", "rl_select_environment",
             "rl_get_current_config", "rl_edit_config",
             "rl_start_training", "rl_check_status",
             "rl_stop_training", "rl_get_results",
-            "rl_list_runs", "rl_test_inference"
+            "rl_list_runs", "rl_test_inference",
+            "hyperspace_sidecar", "hyperspace",
         ],
         "includes": []
     },
