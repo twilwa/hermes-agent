@@ -147,6 +147,37 @@ class PlatformConfig:
 
 
 @dataclass
+class StreamingConfig:
+    """Configuration for real-time token streaming to messaging platforms."""
+    enabled: bool = False
+    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
+    edit_interval: float = 0.3    # Seconds between message edits
+    buffer_threshold: int = 40    # Chars before forcing an edit
+    cursor: str = " ▉"           # Cursor shown during streaming
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "transport": self.transport,
+            "edit_interval": self.edit_interval,
+            "buffer_threshold": self.buffer_threshold,
+            "cursor": self.cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=data.get("enabled", False),
+            transport=data.get("transport", "edit"),
+            edit_interval=float(data.get("edit_interval", 0.3)),
+            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            cursor=data.get("cursor", " ▉"),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -175,7 +206,13 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    
+
+    # Session isolation in shared chats
+    group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
+
+    # Streaming configuration
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -240,6 +277,8 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
+            "group_sessions_per_user": self.group_sessions_per_user,
+            "streaming": self.streaming.to_dict(),
         }
     
     @classmethod
@@ -280,6 +319,8 @@ class GatewayConfig:
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
+        group_sessions_per_user = data.get("group_sessions_per_user")
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -290,6 +331,8 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
 
@@ -344,6 +387,14 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
                 config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+
+            # Bridge group session isolation from config.yaml into gateway runtime.
+            # Secure default is per-user isolation in shared chats.
+            if "group_sessions_per_user" in yaml_cfg:
+                config.group_sessions_per_user = _coerce_bool(
+                    yaml_cfg.get("group_sessions_per_user"),
+                    True,
+                )
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

@@ -205,6 +205,33 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# Patterns that indicate a terminal command may modify/delete files.
+_DESTRUCTIVE_PATTERNS = re.compile(
+    r"""(?:^|\s|&&|\|\||;|`)(?:
+        rm\s|rmdir\s|
+        mv\s|
+        sed\s+-i|
+        truncate\s|
+        dd\s|
+        shred\s|
+        git\s+(?:reset|clean|checkout)\s
+    )""",
+    re.VERBOSE,
+)
+# Output redirects that overwrite files (> but not >>)
+_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+
+
+def _is_destructive_command(cmd: str) -> bool:
+    """Heuristic: does this terminal command look like it modifies/deletes files?"""
+    if not cmd:
+        return False
+    if _DESTRUCTIVE_PATTERNS.search(cmd):
+        return True
+    if _REDIRECT_OVERWRITE.search(cmd):
+        return True
+    return False
+
 
 def _inject_honcho_turn_context(content, turn_context: str):
     """Append Honcho recall to the current-turn user message without mutating history.
@@ -269,6 +296,7 @@ class AIAgent:
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
+        stream_delta_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -368,6 +396,7 @@ class AIAgent:
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
+        self.stream_delta_callback = stream_delta_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -517,6 +546,8 @@ class AIAgent:
             effective_key = api_key or resolve_anthropic_token() or ""
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
+            from agent.anthropic_adapter import _is_oauth_token as _is_oat
+            self._is_anthropic_oauth = _is_oat(effective_key)
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -785,7 +816,7 @@ class AIAgent:
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
 
         # Skills config: nudge interval for skill creation reminders
-        self._skill_nudge_interval = 15
+        self._skill_nudge_interval = 10
         try:
             from hermes_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
@@ -829,9 +860,9 @@ class AIAgent:
         """Verbose print — suppressed when streaming TTS is active.
 
         Pass ``force=True`` for error/warning messages that should always be
-        shown even during streaming TTS playback.
+        shown even during streaming playback (TTS or display).
         """
-        if not force and getattr(self, "_stream_callback", None) is not None:
+        if not force and self._has_stream_consumers():
             return
         print(*args, **kwargs)
 
@@ -2575,15 +2606,39 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None):
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
+        has_tool_calls = False
+        first_delta_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
+                    for event in stream:
+                        if self._interrupt_requested:
+                            break
+                        event_type = getattr(event, "type", "")
+                        # Fire callbacks on text content deltas (suppress during tool calls)
+                        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                            delta_text = getattr(event, "delta", "")
+                            if delta_text and not has_tool_calls:
+                                if not first_delta_fired:
+                                    first_delta_fired = True
+                                    if on_first_delta:
+                                        try:
+                                            on_first_delta()
+                                        except Exception:
+                                            pass
+                                self._fire_stream_delta(delta_text)
+                        # Track tool calls to suppress text streaming
+                        elif "function_call" in event_type:
+                            has_tool_calls = True
+                        # Fire reasoning callbacks
+                        elif "reasoning" in event_type and "delta" in event_type:
+                            reasoning_text = getattr(event, "delta", "")
+                            if reasoning_text:
+                                self._fire_reasoning_delta(reasoning_text)
                     return stream.get_final_response()
             except RuntimeError as exc:
                 err_text = str(exc)
@@ -2764,6 +2819,7 @@ class AIAgent:
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
                         client=request_client_holder["client"],
+                        on_first_delta=getattr(self, "_codex_on_first_delta", None),
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
@@ -2805,116 +2861,246 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
-    def _streaming_api_call(self, api_kwargs: dict, stream_callback):
-        """Streaming variant of _interruptible_api_call for voice TTS pipeline.
+    # ── Unified streaming API call ─────────────────────────────────────────
 
-        Uses ``stream=True`` and forwards content deltas to *stream_callback*
-        in real-time.  Returns a ``SimpleNamespace`` that mimics a normal
-        ``ChatCompletion`` so the rest of the agent loop works unchanged.
+    def _fire_stream_delta(self, text: str) -> None:
+        """Fire all registered stream delta callbacks (display + TTS)."""
+        for cb in (self.stream_delta_callback, self._stream_callback):
+            if cb is not None:
+                try:
+                    cb(text)
+                except Exception:
+                    pass
 
-        This method is separate from ``_interruptible_api_call`` to keep the
-        core agent loop untouched for non-voice users.
+    def _fire_reasoning_delta(self, text: str) -> None:
+        """Fire reasoning callback if registered."""
+        cb = self.reasoning_callback
+        if cb is not None:
+            try:
+                cb(text)
+            except Exception:
+                pass
+
+    def _has_stream_consumers(self) -> bool:
+        """Return True if any streaming consumer is registered."""
+        return (
+            self.stream_delta_callback is not None
+            or getattr(self, "_stream_callback", None) is not None
+        )
+
+    def _interruptible_streaming_api_call(
+        self, api_kwargs: dict, *, on_first_delta: callable = None
+    ):
+        """Streaming variant of _interruptible_api_call for real-time token delivery.
+
+        Handles all three api_modes:
+        - chat_completions: stream=True on OpenAI-compatible endpoints
+        - anthropic_messages: client.messages.stream() via Anthropic SDK
+        - codex_responses: delegates to _run_codex_stream (already streaming)
+
+        Fires stream_delta_callback and _stream_callback for each text token.
+        Tool-call turns suppress the callback — only text-only final responses
+        stream to the consumer.  Returns a SimpleNamespace that mimics the
+        non-streaming response shape so the rest of the agent loop is unchanged.
+
+        Falls back to _interruptible_api_call on provider errors indicating
+        streaming is not supported.
         """
+        if self.api_mode == "codex_responses":
+            # Codex streams internally via _run_codex_stream. The main dispatch
+            # in _interruptible_api_call already calls it; we just need to
+            # ensure on_first_delta reaches it. Store it on the instance
+            # temporarily so _run_codex_stream can pick it up.
+            self._codex_on_first_delta = on_first_delta
+            try:
+                return self._interruptible_api_call(api_kwargs)
+            finally:
+                self._codex_on_first_delta = None
+
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
+        first_delta_fired = {"done": False}
+        deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
+
+        def _fire_first_delta():
+            if not first_delta_fired["done"] and on_first_delta:
+                first_delta_fired["done"] = True
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+
+        def _call_chat_completions():
+            """Stream a chat completions response."""
+            stream_kwargs = {**api_kwargs, "stream": True, "stream_options": {"include_usage": True}}
+            request_client_holder["client"] = self._create_request_openai_client(
+                reason="chat_completion_stream_request"
+            )
+            stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+
+            content_parts: list = []
+            tool_calls_acc: dict = {}
+            finish_reason = None
+            model_name = None
+            role = "assistant"
+            reasoning_parts: list = []
+            usage_obj = None
+
+            for chunk in stream:
+                if self._interrupt_requested:
+                    break
+
+                if not chunk.choices:
+                    if hasattr(chunk, "model") and chunk.model:
+                        model_name = chunk.model
+                    # Usage comes in the final chunk with empty choices
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_obj = chunk.usage
+                    continue
+
+                delta = chunk.choices[0].delta
+                if hasattr(chunk, "model") and chunk.model:
+                    model_name = chunk.model
+
+                # Accumulate reasoning content
+                reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
+                    self._fire_reasoning_delta(reasoning_text)
+
+                # Accumulate text content — fire callback only when no tool calls
+                if delta and delta.content:
+                    content_parts.append(delta.content)
+                    if not tool_calls_acc:
+                        _fire_first_delta()
+                        self._fire_stream_delta(delta.content)
+                        deltas_were_sent["yes"] = True
+
+                # Accumulate tool call deltas (silently, no callback)
+                if delta and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index if tc_delta.index is not None else 0
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": tc_delta.id or "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        entry = tool_calls_acc[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["function"]["arguments"] += tc_delta.function.arguments
+
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+                # Usage in the final chunk
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage_obj = chunk.usage
+
+            # Build mock response matching non-streaming shape
+            full_content = "".join(content_parts) or None
+            mock_tool_calls = None
+            if tool_calls_acc:
+                mock_tool_calls = []
+                for idx in sorted(tool_calls_acc):
+                    tc = tool_calls_acc[idx]
+                    mock_tool_calls.append(SimpleNamespace(
+                        id=tc["id"],
+                        type=tc["type"],
+                        function=SimpleNamespace(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    ))
+
+            full_reasoning = "".join(reasoning_parts) or None
+            mock_message = SimpleNamespace(
+                role=role,
+                content=full_content,
+                tool_calls=mock_tool_calls,
+                reasoning_content=full_reasoning,
+            )
+            mock_choice = SimpleNamespace(
+                index=0,
+                message=mock_message,
+                finish_reason=finish_reason or "stop",
+            )
+            return SimpleNamespace(
+                id="stream-" + str(uuid.uuid4()),
+                model=model_name,
+                choices=[mock_choice],
+                usage=usage_obj,
+            )
+
+        def _call_anthropic():
+            """Stream an Anthropic Messages API response.
+
+            Fires delta callbacks for real-time token delivery, but returns
+            the native Anthropic Message object from get_final_message() so
+            the rest of the agent loop (validation, tool extraction, etc.)
+            works unchanged.
+            """
+            has_tool_use = False
+
+            # Use the Anthropic SDK's streaming context manager
+            with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+                for event in stream:
+                    if self._interrupt_requested:
+                        break
+
+                    event_type = getattr(event, "type", None)
+
+                    if event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", None) == "tool_use":
+                            has_tool_use = True
+
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text = getattr(delta, "text", "")
+                                if text and not has_tool_use:
+                                    _fire_first_delta()
+                                    self._fire_stream_delta(text)
+                            elif delta_type == "thinking_delta":
+                                thinking_text = getattr(delta, "thinking", "")
+                                if thinking_text:
+                                    self._fire_reasoning_delta(thinking_text)
+
+                # Return the native Anthropic Message for downstream processing
+                return stream.get_final_message()
 
         def _call():
             try:
-                stream_kwargs = {**api_kwargs, "stream": True}
-                request_client_holder["client"] = self._create_request_openai_client(
-                    reason="chat_completion_stream_request"
-                )
-                stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
-
-                content_parts: list[str] = []
-                tool_calls_acc: dict[int, dict] = {}
-                finish_reason = None
-                model_name = None
-                role = "assistant"
-
-                for chunk in stream:
-                    if not chunk.choices:
-                        if hasattr(chunk, "model") and chunk.model:
-                            model_name = chunk.model
-                        continue
-
-                    delta = chunk.choices[0].delta
-                    if hasattr(chunk, "model") and chunk.model:
-                        model_name = chunk.model
-
-                    if delta and delta.content:
-                        content_parts.append(delta.content)
-                        try:
-                            stream_callback(delta.content)
-                        except Exception:
-                            pass
-
-                    if delta and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index if tc_delta.index is not None else 0
-                            if idx in tool_calls_acc and tc_delta.id and tc_delta.id != tool_calls_acc[idx]["id"]:
-                                matched = False
-                                for eidx, eentry in tool_calls_acc.items():
-                                    if eentry["id"] == tc_delta.id:
-                                        idx = eidx
-                                        matched = True
-                                        break
-                                if not matched:
-                                    idx = (max(k for k in tool_calls_acc if isinstance(k, int)) + 1) if tool_calls_acc else 0
-                            if idx not in tool_calls_acc:
-                                tool_calls_acc[idx] = {
-                                    "id": tc_delta.id or "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            entry = tool_calls_acc[idx]
-                            if tc_delta.id:
-                                entry["id"] = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    entry["function"]["name"] += tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    entry["function"]["arguments"] += tc_delta.function.arguments
-
-                    if chunk.choices[0].finish_reason:
-                        finish_reason = chunk.choices[0].finish_reason
-
-                full_content = "".join(content_parts) or None
-                mock_tool_calls = None
-                if tool_calls_acc:
-                    mock_tool_calls = []
-                    for idx in sorted(tool_calls_acc):
-                        tc = tool_calls_acc[idx]
-                        mock_tool_calls.append(SimpleNamespace(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=SimpleNamespace(
-                                name=tc["function"]["name"],
-                                arguments=tc["function"]["arguments"],
-                            ),
-                        ))
-
-                mock_message = SimpleNamespace(
-                    role=role,
-                    content=full_content,
-                    tool_calls=mock_tool_calls,
-                    reasoning_content=None,
-                )
-                mock_choice = SimpleNamespace(
-                    index=0,
-                    message=mock_message,
-                    finish_reason=finish_reason or "stop",
-                )
-                mock_response = SimpleNamespace(
-                    id="stream-" + str(uuid.uuid4()),
-                    model=model_name,
-                    choices=[mock_choice],
-                    usage=None,
-                )
-                result["response"] = mock_response
-
+                if self.api_mode == "anthropic_messages":
+                    self._try_refresh_anthropic_client_credentials()
+                    result["response"] = _call_anthropic()
+                else:
+                    result["response"] = _call_chat_completions()
             except Exception as e:
-                result["error"] = e
+                if deltas_were_sent["yes"]:
+                    # Streaming failed AFTER some tokens were already delivered
+                    # to consumers. Don't fall back — that would cause
+                    # double-delivery (partial streamed + full non-streamed).
+                    # Let the error propagate; the partial content already
+                    # reached the user via the stream.
+                    logger.warning("Streaming failed after partial delivery, not falling back: %s", e)
+                    result["error"] = e
+                else:
+                    # Streaming failed before any tokens reached consumers.
+                    # Safe to fall back to the standard non-streaming path.
+                    logger.info("Streaming failed before delivery, falling back to non-streaming: %s", e)
+                    try:
+                        result["response"] = self._interruptible_api_call(api_kwargs)
+                    except Exception as fallback_err:
+                        result["error"] = fallback_err
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
@@ -2940,7 +3126,7 @@ class AIAgent:
                             self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
                 except Exception:
                     pass
-                raise InterruptedError("Agent interrupted during API call")
+                raise InterruptedError("Agent interrupted during streaming API call")
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
@@ -3188,6 +3374,7 @@ class AIAgent:
                 tools=self.tools,
                 max_tokens=self.max_tokens,
                 reasoning_config=self.reasoning_config,
+                is_oauth=getattr(self, "_is_anthropic_oauth", False),
             )
 
         if self.api_mode == "codex_responses":
@@ -3515,7 +3702,8 @@ class AIAgent:
 
         flush_content = (
             "[System: The session is being compressed. "
-            "Please save anything worth remembering to your memories.]"
+            "Save anything worth remembering — prioritize user preferences, "
+            "corrections, and recurring patterns over task-specific details.]"
         )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
         flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
@@ -3604,7 +3792,7 @@ class AIAgent:
                     tool_calls = assistant_msg.tool_calls
             elif self.api_mode == "anthropic_messages" and not _aux_available:
                 from agent.anthropic_adapter import normalize_anthropic_response as _nar_flush
-                _flush_msg, _ = _nar_flush(response)
+                _flush_msg, _ = _nar_flush(response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
                 if _flush_msg and _flush_msg.tool_calls:
                     tool_calls = _flush_msg.tool_calls
             elif hasattr(response, "choices") and response.choices:
@@ -3790,6 +3978,8 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                honcho_manager=self._honcho,
+                honcho_session_key=self._honcho_session_key,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -3837,6 +4027,18 @@ class AIAgent:
                     if file_path:
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
                         self._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                except Exception:
+                    pass
+
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
                 except Exception:
                     pass
 
@@ -4033,6 +4235,18 @@ class AIAgent:
                 except Exception:
                     pass  # never block tool execution
 
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
+                except Exception:
+                    pass  # never block tool execution
+
             tool_start_time = time.time()
 
             if function_name == "todo":
@@ -4119,7 +4333,7 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
-            elif self.quiet_mode and self._stream_callback is None:
+            elif self.quiet_mode and not self._has_stream_consumers():
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                 emoji = _get_tool_emoji(function_name)
                 preview = _build_tool_preview(function_name, function_args) or function_name
@@ -4132,6 +4346,8 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        honcho_manager=self._honcho,
+                        honcho_session_key=self._honcho_session_key,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -4146,6 +4362,8 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        honcho_manager=self._honcho,
+                        honcho_session_key=self._honcho_session_key,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -4335,9 +4553,10 @@ class AIAgent:
                 if self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak, normalize_anthropic_response as _nar
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
-                                   max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
+                                   max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
+                                   is_oauth=getattr(self, '_is_anthropic_oauth', False))
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _msg, _ = _nar(summary_response)
+                    _msg, _ = _nar(summary_response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
                     final_response = (_msg.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -4365,9 +4584,10 @@ class AIAgent:
                 elif self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak2, normalize_anthropic_response as _nar2
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
+                                    is_oauth=getattr(self, '_is_anthropic_oauth', False),
                                      max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_msg, _ = _nar2(retry_response)
+                    _retry_msg, _ = _nar2(retry_response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
                     final_response = (_retry_msg.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -4410,6 +4630,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        sync_honcho: bool = True,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -4425,6 +4646,8 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
+            sync_honcho: When False, skip writing the final synthetic turn back
+                to Honcho or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -4481,8 +4704,9 @@ class AIAgent:
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 user_message += (
-                    "\n\n[System: You've had several exchanges in this session. "
-                    "Consider whether there's anything worth saving to your memories.]"
+                    "\n\n[System: You've had several exchanges. Consider: "
+                    "has the user shared preferences, corrected you, or revealed "
+                    "something about their workflow worth remembering for future sessions?]"
                 )
                 self._turns_since_memory = 0
 
@@ -4492,8 +4716,9 @@ class AIAgent:
                 and self._iters_since_skill >= self._skill_nudge_interval
                 and "skill_manage" in self.valid_tool_names):
             user_message += (
-                "\n\n[System: The previous task involved many steps. "
-                "If you discovered a reusable workflow, consider saving it as a skill.]"
+                "\n\n[System: The previous task involved many tool calls. "
+                "Save the approach as a skill if it's reusable, or update "
+                "any existing skill you used if it was wrong or incomplete.]"
             )
             self._iters_since_skill = 0
 
@@ -4747,8 +4972,8 @@ class AIAgent:
                 self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
-            elif self._stream_callback is None:
-                # Animated thinking spinner in quiet mode (skip during streaming TTS)
+            elif not self._has_stream_consumers():
+                # Animated thinking spinner in quiet mode (skip during streaming)
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 if self.thinking_callback:
@@ -4788,33 +5013,22 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    cb = getattr(self, "_stream_callback", None)
-                    if cb is not None and self.api_mode == "chat_completions":
-                        response = self._streaming_api_call(api_kwargs, cb)
+                    if self._has_stream_consumers():
+                        # Streaming path: fire delta callbacks for real-time
+                        # token delivery to CLI display, gateway, or TTS.
+                        def _stop_spinner():
+                            nonlocal thinking_spinner
+                            if thinking_spinner:
+                                thinking_spinner.stop("")
+                                thinking_spinner = None
+                            if self.thinking_callback:
+                                self.thinking_callback("")
+
+                        response = self._interruptible_streaming_api_call(
+                            api_kwargs, on_first_delta=_stop_spinner
+                        )
                     else:
                         response = self._interruptible_api_call(api_kwargs)
-                        # Forward full response to TTS callback for non-streaming providers
-                        # (e.g. Anthropic) so voice TTS still works via batch delivery.
-                        if cb is not None and response:
-                            try:
-                                content = None
-                                # Try choices first — _interruptible_api_call converts all
-                                # providers (including Anthropic) to this format.
-                                try:
-                                    content = response.choices[0].message.content
-                                except (AttributeError, IndexError):
-                                    pass
-                                # Fallback: Anthropic native content blocks
-                                if not content and self.api_mode == "anthropic_messages":
-                                    text_parts = [
-                                        block.text for block in getattr(response, "content", [])
-                                        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
-                                    ]
-                                    content = " ".join(text_parts) if text_parts else None
-                                if content:
-                                    cb(content)
-                            except Exception:
-                                pass
                     
                     api_duration = time.time() - api_start_time
                     
@@ -5069,6 +5283,22 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+
+                        # Persist token counts to session DB for /insights.
+                        # Gateway sessions persist via session_store.update_session()
+                        # after run_conversation returns, so only persist here for
+                        # CLI (and other non-gateway) platforms to avoid double-counting.
+                        if (self._session_db and self.session_id
+                                and getattr(self, 'platform', None) == 'cli'):
+                            try:
+                                self._session_db.update_token_counts(
+                                    self.session_id,
+                                    input_tokens=prompt_tokens,
+                                    output_tokens=completion_tokens,
+                                    model=self.model,
+                                )
+                            except Exception:
+                                pass  # never block the agent loop
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
@@ -5317,10 +5547,13 @@ class AIAgent:
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
                     # Note: 413 and context-length errors are excluded — handled above.
+                    # 429 (rate limit) is transient and MUST be retried with backoff.
+                    # 529 (Anthropic overloaded) is also transient.
                     # Also catch local validation errors (ValueError, TypeError) — these
                     # are programming bugs, not transient failures.
+                    _RETRYABLE_STATUS_CODES = {413, 429, 529}
                     is_local_validation_error = isinstance(api_error, (ValueError, TypeError))
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES
                     is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
@@ -5416,7 +5649,9 @@ class AIAgent:
                     assistant_message, finish_reason = self._normalize_codex_response(response)
                 elif self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import normalize_anthropic_response
-                    assistant_message, finish_reason = normalize_anthropic_response(response)
+                    assistant_message, finish_reason = normalize_anthropic_response(
+                        response, strip_tool_prefix=getattr(self, "_is_anthropic_oauth", False)
+                    )
                 else:
                     assistant_message = response.choices[0].message
                 
@@ -5917,7 +6152,7 @@ class AIAgent:
         self._persist_session(messages, conversation_history)
 
         # Sync conversation to Honcho for user modeling
-        if final_response and not interrupted:
+        if final_response and not interrupted and sync_honcho:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
 
