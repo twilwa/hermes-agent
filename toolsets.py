@@ -96,8 +96,8 @@ TOOLSETS = {
     },
     
     "terminal": {
-        "description": "Terminal/command execution, process management, and the Modal Hyperspace GPU sidecar",
-        "tools": ["terminal", "process", "hyperspace_sidecar"],
+        "description": "Terminal/command execution, process management, and the Modal Hyperspace GPU sidecar with health monitoring, startup-update suppression, and mode-aware model guidance (chill=30%, balanced=50%, power=80%)",
+        "tools": ["terminal", "process", "hyperspace_sidecar", "hyperspace"],
         "includes": []
     },
     
@@ -131,14 +131,14 @@ TOOLSETS = {
     },
     
     "rl": {
-        "description": "RL training tools for Prime or Tinker workflows, plus the Modal L4 Hyperspace sidecar",
+        "description": "RL training tools for Prime or Tinker workflows, plus the Modal L4 Hyperspace sidecar and monitor with startup-update suppression and mode-aware model guidance (chill=30%, balanced=50%, power=80%)",
         "tools": [
             "rl_list_environments", "rl_select_environment",
             "rl_get_current_config", "rl_edit_config",
             "rl_start_training", "rl_check_status",
             "rl_stop_training", "rl_get_results",
             "rl_list_runs", "rl_test_inference",
-            "hyperspace_sidecar",
+            "hyperspace_sidecar", "hyperspace",
         ],
         "includes": []
     },

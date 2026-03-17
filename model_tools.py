@@ -141,7 +141,7 @@ _last_resolved_tool_names: List[str] = []
 
 _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search", "web_extract"],
-    "terminal_tools": ["terminal", "hyperspace_sidecar"],
+    "terminal_tools": ["terminal", "hyperspace_sidecar", "hyperspace"],
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
@@ -159,7 +159,7 @@ _LEGACY_TOOLSET_MAP = {
         "rl_start_training", "rl_check_status",
         "rl_stop_training", "rl_get_results",
         "rl_list_runs", "rl_test_inference",
-        "hyperspace_sidecar",
+        "hyperspace_sidecar", "hyperspace",
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
