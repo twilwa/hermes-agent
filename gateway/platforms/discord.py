@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -77,6 +78,81 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _find_opus_library_path() -> Optional[str]:
+    """Locate the system Opus library needed for Discord voice encode/decode."""
+    try:
+        import ctypes.util
+        opus_path = ctypes.util.find_library("opus")
+    except Exception:
+        opus_path = None
+
+    if opus_path:
+        return opus_path
+
+    candidates = (
+        "/opt/homebrew/lib/libopus.dylib",          # macOS Apple Silicon
+        "/usr/local/lib/libopus.dylib",             # macOS Intel
+        "/usr/lib/x86_64-linux-gnu/libopus.so.0",   # Debian/Ubuntu x86
+        "/usr/lib/aarch64-linux-gnu/libopus.so.0",  # Debian/Ubuntu ARM
+        "/usr/lib/libopus.so",                      # Arch Linux
+        "/usr/lib64/libopus.so",                    # RHEL/Fedora
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
+
+
+def _ensure_discord_opus_loaded() -> Optional[str]:
+    """Load the Opus codec if possible and return an error string on failure."""
+    if not DISCORD_AVAILABLE:
+        return "discord.py is not installed"
+
+    if discord.opus.is_loaded():
+        return None
+
+    opus_path = _find_opus_library_path()
+    if not opus_path:
+        return "Opus codec not found (install libopus)"
+
+    try:
+        discord.opus.load_opus(opus_path)
+    except Exception as exc:
+        return f"Opus codec failed to load from {opus_path}: {exc}"
+
+    if not discord.opus.is_loaded():
+        return f"Opus codec did not load from {opus_path}"
+
+    return None
+
+
+def _get_voice_runtime_issues() -> List[str]:
+    """Return the missing runtime pieces required for Discord voice mode."""
+    issues: List[str] = []
+
+    opus_issue = _ensure_discord_opus_loaded()
+    if opus_issue:
+        issues.append(opus_issue)
+
+    if shutil.which("ffmpeg") is None:
+        issues.append("ffmpeg not found in PATH")
+
+    try:
+        import nacl.secret
+
+        nacl.secret.Aead(bytes(32))
+    except Exception:
+        issues.append("PyNaCl>=1.5.0 with Aead support is required")
+
+    try:
+        import davey  # noqa: F401
+    except Exception:
+        issues.append("davey is not installed")
+
+    return issues
 
 
 class VoiceReceiver:
@@ -456,29 +532,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         # Load opus codec for voice channel support
-        if not discord.opus.is_loaded():
-            import ctypes.util
-            opus_path = ctypes.util.find_library("opus")
-            # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
-            # so fall back to known Homebrew paths if needed.
-            if not opus_path:
-                import sys
-                _homebrew_paths = (
-                    "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
-                    "/usr/local/lib/libopus.dylib",     # Intel Mac
-                )
-                if sys.platform == "darwin":
-                    for _hp in _homebrew_paths:
-                        if os.path.isfile(_hp):
-                            opus_path = _hp
-                            break
-            if opus_path:
-                try:
-                    discord.opus.load_opus(opus_path)
-                except Exception:
-                    logger.warning("Opus codec found at %s but failed to load", opus_path)
-            if not discord.opus.is_loaded():
-                logger.warning("Opus codec not found — voice channel playback disabled")
+        opus_issue = _ensure_discord_opus_loaded()
+        if opus_issue:
+            logger.warning("Discord voice runtime warning: %s", opus_issue)
         
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
@@ -841,6 +897,11 @@ class DiscordAdapter(BasePlatformAdapter):
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
+
+        runtime_issues = _get_voice_runtime_issues()
+        if runtime_issues:
+            raise RuntimeError("; ".join(runtime_issues))
+
         guild_id = channel.guild.id
 
         # Already connected in this guild?
@@ -853,9 +914,18 @@ class DiscordAdapter(BasePlatformAdapter):
             self._reset_voice_timeout(guild_id)
             return True
 
-        vc = await channel.connect()
+        vc = await channel.connect(self_deaf=False, self_mute=False)
         self._voice_clients[guild_id] = vc
         self._reset_voice_timeout(guild_id)
+
+        stage_channel_type = getattr(discord, "StageChannel", None)
+        if isinstance(stage_channel_type, type) and isinstance(channel, stage_channel_type):
+            try:
+                me = channel.guild.me
+                if me and getattr(me, "voice", None) and me.voice.suppress:
+                    await me.edit(suppress=False)
+            except Exception as e:
+                logger.warning("Failed to request speaker state in stage channel: %s", e)
 
         # Start voice receiver (Phase 2: listen to users)
         try:
@@ -867,6 +937,12 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.warning("Voice receiver failed to start: %s", e)
+            self._voice_clients.pop(guild_id, None)
+            task = self._voice_timeout_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            await vc.disconnect()
+            raise RuntimeError(f"Voice receiver failed to start: {e}") from e
 
         return True
 

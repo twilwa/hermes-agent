@@ -3297,11 +3297,18 @@ class GatewayRunner:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
             err_lower = str(e).lower()
-            if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
+            if (
+                "pynacl" in err_lower
+                or "nacl" in err_lower
+                or "davey" in err_lower
+                or "opus" in err_lower
+                or "ffmpeg" in err_lower
+            ):
                 return (
-                    "Voice dependencies are missing (PyNaCl / davey). "
+                    "Voice runtime dependencies are missing (PyNaCl / davey / Opus / ffmpeg). "
                     "Install or reinstall Hermes with the messaging extra, e.g. "
-                    "`pip install hermes-agent[messaging]`."
+                    "`pip install hermes-agent[messaging]`, and install system packages "
+                    "like `ffmpeg` and `libopus` in the runtime environment."
                 )
             return f"Failed to join voice channel: {e}"
 

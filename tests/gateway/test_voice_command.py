@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -751,7 +752,7 @@ class TestVoiceChannelCommands:
 
         result = await runner._handle_voice_channel_join(event)
 
-        assert "voice dependencies are missing" in result.lower()
+        assert "voice runtime dependencies are missing" in result.lower()
         assert "hermes-agent[messaging]" in result
 
     # -- _handle_voice_channel_leave --
@@ -917,6 +918,75 @@ class TestDiscordVoiceChannelMethods:
         mock_vc.is_connected.return_value = False
         adapter._voice_clients[111] = mock_vc
         assert adapter.is_in_voice_channel(111) is False
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_checks_runtime_preflight(self):
+        adapter = self._make_adapter()
+        mock_channel = MagicMock()
+        mock_channel.guild = SimpleNamespace(id=111, me=None)
+        mock_channel.connect = AsyncMock()
+
+        with patch(
+            "gateway.platforms.discord._get_voice_runtime_issues",
+            return_value=["ffmpeg not found in PATH"],
+        ):
+            with pytest.raises(RuntimeError, match="ffmpeg not found in PATH"):
+                await adapter.join_voice_channel(mock_channel)
+
+        mock_channel.connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_uses_non_deaf_connect(self):
+        adapter = self._make_adapter()
+        adapter._reset_voice_timeout = MagicMock()
+
+        mock_vc = MagicMock()
+        mock_channel = MagicMock()
+        mock_channel.guild = SimpleNamespace(id=111, me=None)
+        mock_channel.connect = AsyncMock(return_value=mock_vc)
+
+        mock_receiver = MagicMock()
+        mock_receiver._running = False
+
+        with patch(
+            "gateway.platforms.discord._get_voice_runtime_issues",
+            return_value=[],
+        ), patch(
+            "gateway.platforms.discord.VoiceReceiver",
+            return_value=mock_receiver,
+        ):
+            result = await adapter.join_voice_channel(mock_channel)
+
+        assert result is True
+        mock_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_disconnects_when_receiver_start_fails(self):
+        adapter = self._make_adapter()
+        adapter._reset_voice_timeout = MagicMock()
+
+        mock_vc = MagicMock()
+        mock_vc.disconnect = AsyncMock()
+        mock_channel = MagicMock()
+        mock_channel.guild = SimpleNamespace(id=111, me=None)
+        mock_channel.connect = AsyncMock(return_value=mock_vc)
+
+        broken_receiver = MagicMock()
+        broken_receiver.start.side_effect = RuntimeError("receiver broke")
+
+        with patch(
+            "gateway.platforms.discord._get_voice_runtime_issues",
+            return_value=[],
+        ), patch(
+            "gateway.platforms.discord.VoiceReceiver",
+            return_value=broken_receiver,
+        ):
+            with pytest.raises(RuntimeError, match="Voice receiver failed to start: receiver broke"):
+                await adapter.join_voice_channel(mock_channel)
+
+        mock_vc.disconnect.assert_awaited_once()
+        assert 111 not in adapter._voice_clients
 
     @pytest.mark.asyncio
     async def test_leave_voice_channel_cleans_up(self):
