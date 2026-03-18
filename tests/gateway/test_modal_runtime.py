@@ -6,7 +6,7 @@ from gateway.modal_runtime import (
     sanitize_config_for_modal,
     sanitize_env_text_for_modal,
 )
-from scripts.modal_gateway import _named_secret_names
+from scripts.modal_gateway import _named_secret_names, VOICE_RUNTIME_APT_PACKAGES
 
 
 def test_sanitize_config_for_modal_forces_local_terminal_and_drops_local_urls():
@@ -101,3 +101,7 @@ def test_named_secret_names_dedupe_and_skip_empty_values(monkeypatch):
     monkeypatch.setenv("HERMES_MODAL_FIRECRAWL_API_KEY_SECRET", "shared-secret")
 
     assert _named_secret_names() == ["shared-secret"]
+
+
+def test_modal_gateway_installs_voice_runtime_packages():
+    assert {"ffmpeg", "libopus0"}.issubset(set(VOICE_RUNTIME_APT_PACKAGES))
