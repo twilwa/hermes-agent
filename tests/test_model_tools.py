@@ -6,6 +6,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -101,3 +102,13 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_cronjob_tool_is_available_in_gateway_context(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+
+        tool_names = [
+            item["function"]["name"]
+            for item in get_tool_definitions(enabled_toolsets=["cronjob"], quiet_mode=True)
+        ]
+
+        assert "cronjob" in tool_names
