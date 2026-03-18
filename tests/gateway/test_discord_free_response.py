@@ -1,6 +1,9 @@
 """Tests for Discord free-response defaults and mention gating."""
 
+import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -358,3 +361,31 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._bot_participated_threads
+
+
+def test_discord_loads_persisted_thread_participation(monkeypatch, tmp_path):
+    """Persisted thread participation should survive adapter restarts."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    state_path = hermes_home / "discord-participated-threads.json"
+    state_path.write_text(json.dumps(["555", "777"]) + "\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    restarted = DiscordAdapter(config)
+
+    assert restarted._bot_participated_threads == {"555", "777"}
+
+
+def test_discord_persists_thread_participation(monkeypatch, tmp_path):
+    """Newly tracked thread IDs should be written under HERMES_HOME."""
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+
+    adapter._record_thread_participation("999")
+
+    state_path = Path(os.environ["HERMES_HOME"]) / "discord-participated-threads.json"
+    assert json.loads(state_path.read_text(encoding="utf-8")) == ["999"]
