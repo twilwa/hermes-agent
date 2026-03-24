@@ -220,3 +220,25 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_reset_terminal_sandbox_command_targets_current_session(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.console = MagicMock()
+
+    with patch("cli._reset_terminal_sandbox", return_value=True) as reset_sandbox:
+        cli.process_command("/reset-terminal-sandbox")
+
+    reset_sandbox.assert_called_once_with(cli.session_id)
+    cli.console.print.assert_called_once_with("  Reset terminal sandbox for this session.")
+
+
+def test_reset_terminal_sandbox_command_reports_missing_session_sandbox(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.console = MagicMock()
+
+    with patch("cli._reset_terminal_sandbox", return_value=False) as reset_sandbox:
+        cli.process_command("/reset-terminal-sandbox")
+
+    reset_sandbox.assert_called_once_with(cli.session_id)
+    cli.console.print.assert_called_once_with("  No active terminal sandbox for this session.")

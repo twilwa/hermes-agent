@@ -61,8 +61,8 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms"):
+    # Telegram, WhatsApp, Signal, and LiveKit can't enumerate chats directly -- pull from session history
+    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms", "livekit"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 
@@ -246,7 +246,8 @@ def format_directory_for_display() -> str:
                     lines.append(f"  discord:{ch['name']}")
             lines.append("")
         else:
-            lines.append(f"{plat_name.title()}:")
+            label = "LiveKit" if plat_name == "livekit" else plat_name.title()
+            lines.append(f"{label}:")
             for ch in channels:
                 type_label = f" ({ch['type']})" if ch.get("type") else ""
                 lines.append(f"  {plat_name}:{ch['name']}{type_label}")

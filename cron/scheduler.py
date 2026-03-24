@@ -135,6 +135,7 @@ def _deliver_result(job: dict, content: str) -> None:
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
+    livekit_platform = getattr(Platform, "LIVEKIT", None)
     platform_map = {
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,
@@ -148,6 +149,8 @@ def _deliver_result(job: dict, content: str) -> None:
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
+    if livekit_platform is not None:
+        platform_map["livekit"] = livekit_platform
     platform = platform_map.get(platform_name.lower())
     if not platform:
         logger.warning("Job '%s': unknown platform '%s' for delivery", job["id"], platform_name)

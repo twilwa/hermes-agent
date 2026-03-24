@@ -225,6 +225,7 @@ from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
+_LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", None)
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -1427,6 +1428,19 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif _LIVEKIT_PLATFORM is not None and platform == _LIVEKIT_PLATFORM:
+            try:
+                from gateway.platforms.livekit import LiveKitAdapter, check_livekit_requirements
+            except ImportError:
+                logger.warning("LiveKit: hermes-livekit is not installed")
+                return None
+            if not check_livekit_requirements():
+                logger.warning("LiveKit: hermes-livekit not installed or runtime not configured")
+                return None
+            adapter = LiveKitAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
+
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
             if not check_api_server_requirements():
@@ -1492,6 +1506,9 @@ class GatewayRunner:
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
         }
+        if _LIVEKIT_PLATFORM is not None:
+            platform_env_map[_LIVEKIT_PLATFORM] = "LIVEKIT_ALLOWED_USERS"
+            platform_allow_all_map[_LIVEKIT_PLATFORM] = "LIVEKIT_ALLOW_ALL_USERS"
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
@@ -3705,12 +3722,57 @@ class GatewayRunner:
                 )
                 return
 
-            user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
-            platform_key = _platform_config_key(source.platform)
+            # Read model from config via shared helper
+            model = _resolve_gateway_model()
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            # Determine toolset (same logic as _run_agent)
+            default_toolset_map = {
+                Platform.LOCAL: "hermes-cli",
+                Platform.TELEGRAM: "hermes-telegram",
+                Platform.DISCORD: "hermes-discord",
+                Platform.WHATSAPP: "hermes-whatsapp",
+                Platform.SLACK: "hermes-slack",
+                Platform.SIGNAL: "hermes-signal",
+                Platform.HOMEASSISTANT: "hermes-homeassistant",
+                Platform.EMAIL: "hermes-email",
+                Platform.DINGTALK: "hermes-dingtalk",
+            }
+            if _LIVEKIT_PLATFORM is not None:
+                default_toolset_map[_LIVEKIT_PLATFORM] = "hermes-livekit"
+            platform_toolsets_config = {}
+            try:
+                config_path = _hermes_home / 'config.yaml'
+                if config_path.exists():
+                    import yaml
+                    with open(config_path, 'r', encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                    platform_toolsets_config = user_config.get("platform_toolsets", {})
+            except Exception:
+                pass
+
+            platform_config_key = {
+                Platform.LOCAL: "cli",
+                Platform.TELEGRAM: "telegram",
+                Platform.DISCORD: "discord",
+                Platform.WHATSAPP: "whatsapp",
+                Platform.SLACK: "slack",
+                Platform.SIGNAL: "signal",
+                Platform.HOMEASSISTANT: "homeassistant",
+                Platform.EMAIL: "email",
+                Platform.DINGTALK: "dingtalk",
+            }
+            if _LIVEKIT_PLATFORM is not None:
+                platform_config_key[_LIVEKIT_PLATFORM] = "livekit"
+            platform_config_key = platform_config_key.get(source.platform, "telegram")
+
+            config_toolsets = platform_toolsets_config.get(platform_config_key)
+            if config_toolsets and isinstance(config_toolsets, list):
+                enabled_toolsets = config_toolsets
+            else:
+                default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+                enabled_toolsets = [default_toolset]
+
+            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -4901,12 +4963,58 @@ class GatewayRunner:
         from run_agent import AIAgent
         import queue
         
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
+        # Determine toolset based on platform.
+        # Check config.yaml for per-platform overrides, fallback to hardcoded defaults.
+        default_toolset_map = {
+            Platform.LOCAL: "hermes-cli",
+            Platform.TELEGRAM: "hermes-telegram",
+            Platform.DISCORD: "hermes-discord",
+            Platform.WHATSAPP: "hermes-whatsapp",
+            Platform.SLACK: "hermes-slack",
+            Platform.SIGNAL: "hermes-signal",
+            Platform.HOMEASSISTANT: "hermes-homeassistant",
+            Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
+        }
+        if _LIVEKIT_PLATFORM is not None:
+            default_toolset_map[_LIVEKIT_PLATFORM] = "hermes-livekit"
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        # Try to load platform_toolsets from config
+        platform_toolsets_config = {}
+        try:
+            config_path = _hermes_home / 'config.yaml'
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                platform_toolsets_config = user_config.get("platform_toolsets", {})
+        except Exception as e:
+            logger.debug("Could not load platform_toolsets config: %s", e)
 
+        # Map platform enum to config key
+        platform_config_key = {
+            Platform.LOCAL: "cli",
+            Platform.TELEGRAM: "telegram",
+            Platform.DISCORD: "discord",
+            Platform.WHATSAPP: "whatsapp",
+            Platform.SLACK: "slack",
+            Platform.SIGNAL: "signal",
+            Platform.HOMEASSISTANT: "homeassistant",
+            Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
+        }
+        if _LIVEKIT_PLATFORM is not None:
+            platform_config_key[_LIVEKIT_PLATFORM] = "livekit"
+        platform_config_key = platform_config_key.get(source.platform, "telegram")
+        
+        # Use config override if present (list of toolsets), otherwise hardcoded default
+        config_toolsets = platform_toolsets_config.get(platform_config_key)
+        if config_toolsets and isinstance(config_toolsets, list):
+            enabled_toolsets = config_toolsets
+        else:
+            default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+            enabled_toolsets = [default_toolset]
+        
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility.
         # YAML 1.1 parses bare `off` as boolean False — normalise before

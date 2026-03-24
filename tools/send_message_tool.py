@@ -1,8 +1,9 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
-human-friendly channel names to IDs. Works in both CLI and gateway contexts.
+(Telegram, Discord, Slack, LiveKit). Supports listing available targets and
+resolving human-friendly channel names to IDs. Works in both CLI and gateway
+contexts.
 """
 
 import json
@@ -12,7 +13,10 @@ import re
 import ssl
 import time
 
+from gateway.config import Platform
+
 logger = logging.getLogger(__name__)
+_LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", None)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -29,7 +33,8 @@ SEND_MESSAGE_SCHEMA = {
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "to the home channel without listing first.\n"
+        "LiveKit targets use the same platform:name syntax as the other messaging platforms."
     ),
     "parameters": {
         "type": "object",
@@ -41,7 +46,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'livekit:studio-room', 'signal:+15551234567'"
             },
             "message": {
                 "type": "string",
@@ -131,6 +136,8 @@ def _handle_send(args):
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
+    if _LIVEKIT_PLATFORM is not None:
+        platform_map["livekit"] = _LIVEKIT_PLATFORM
     platform = platform_map.get(platform_name)
     if not platform:
         avail = ", ".join(platform_map.keys())
@@ -335,6 +342,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_discord(pconfig.token, chat_id, chunk)
         elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
+        elif _LIVEKIT_PLATFORM is not None and platform == _LIVEKIT_PLATFORM:
+            result = await _send_livekit(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -355,6 +364,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         warnings.append(warning)
         last_result["warnings"] = warnings
     return last_result
+
+
+async def _send_livekit(pconfig, chat_id, message, thread_id=None):
+    """Send a text message into a LiveKit room or session target."""
+    try:
+        from gateway.platforms.livekit import LiveKitAdapter
+    except ImportError as e:
+        return {"error": f"LiveKit sending is unavailable: {e}"}
+
+    adapter = LiveKitAdapter(pconfig)
+    result = await adapter.send(chat_id, message, reply_to=thread_id)
+    if isinstance(result, dict):
+        return result
+    return {"success": True, "result": result}
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
