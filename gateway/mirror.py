@@ -28,6 +28,7 @@ def mirror_to_session(
     message_text: str,
     source_label: str = "cli",
     thread_id: Optional[str] = None,
+    linked_chat_id: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -39,9 +40,20 @@ def mirror_to_session(
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id)
+        session_id = _find_session_id(
+            platform,
+            str(chat_id),
+            thread_id=thread_id,
+            linked_chat_id=linked_chat_id,
+        )
         if not session_id:
-            logger.debug("Mirror: no session found for %s:%s:%s", platform, chat_id, thread_id)
+            logger.debug(
+                "Mirror: no session found for %s:%s:%s linked=%s",
+                platform,
+                chat_id,
+                thread_id,
+                linked_chat_id,
+            )
             return False
 
         mirror_msg = {
@@ -51,6 +63,8 @@ def mirror_to_session(
             "mirror": True,
             "mirror_source": source_label,
         }
+        if linked_chat_id is not None:
+            mirror_msg["mirror_linked_chat_id"] = str(linked_chat_id)
 
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
@@ -59,17 +73,30 @@ def mirror_to_session(
         return True
 
     except Exception as e:
-        logger.debug("Mirror failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
+        logger.debug(
+            "Mirror failed for %s:%s:%s linked=%s: %s",
+            platform,
+            chat_id,
+            thread_id,
+            linked_chat_id,
+            e,
+        )
         return False
 
 
-def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None) -> Optional[str]:
+def _find_session_id(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    linked_chat_id: Optional[str] = None,
+) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
 
     Scans sessions.json entries and matches where origin.chat_id == chat_id
-    on the right platform.  DM session keys don't embed the chat_id
-    (e.g. "agent:main:telegram:dm"), so we check the origin dict.
+    on the right platform.  When ``linked_chat_id`` is provided, also matches
+    ``origin.chat_id_alt`` so linked LiveKit room events can mirror into the
+    owning Hermes session.
     """
     if not _SESSIONS_INDEX.exists():
         return None
@@ -92,14 +119,25 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
             continue
 
         origin_chat_id = str(origin.get("chat_id", ""))
-        if origin_chat_id == str(chat_id):
-            origin_thread_id = origin.get("thread_id")
-            if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
-                continue
-            updated = entry.get("updated_at", "")
-            if updated > best_updated:
-                best_updated = updated
-                best_match = entry.get("session_id")
+        origin_chat_id_alt = origin.get("chat_id_alt")
+        origin_thread_id = origin.get("thread_id")
+
+        if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+            continue
+
+        matches_primary_identity = origin_chat_id == str(chat_id)
+        matches_linked_identity = (
+            linked_chat_id is not None
+            and origin_chat_id_alt is not None
+            and str(origin_chat_id_alt) == str(linked_chat_id)
+        )
+        if not (matches_primary_identity or matches_linked_identity):
+            continue
+
+        updated = entry.get("updated_at", "")
+        if updated > best_updated:
+            best_updated = updated
+            best_match = entry.get("session_id")
 
     return best_match
 

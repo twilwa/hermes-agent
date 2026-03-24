@@ -83,6 +83,18 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
+    def test_chat_id_alt_roundtrip(self):
+        """chat_id_alt should survive serialization for linked-room identity."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_id_alt="room-abc",
+        )
+        d = source.to_dict()
+        restored = SessionSource.from_dict(d)
+
+        assert restored.chat_id_alt == "room-abc"
+
     def test_invalid_platform_raises(self):
         with pytest.raises((ValueError, KeyError)):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
@@ -646,6 +658,22 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_chat_id_alt_does_not_change_session_key(self):
+        base = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        linked = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            chat_id_alt="room-abc",
+        )
+
+        assert build_session_key(base) == build_session_key(linked)
+        assert build_session_key(linked) == "agent:main:discord:group:guild-123"
 
 
 class TestSessionStoreEntriesAttribute:
