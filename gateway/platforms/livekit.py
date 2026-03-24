@@ -33,9 +33,6 @@ LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", _LiveKitPlatformFallback.LIVEKIT
 
 LIVEKIT_CHAT_TOPIC = "lk.chat"
 LIVEKIT_TYPING_TOPIC = "hermes.typing"
-LIVEKIT_CHAT_TOPICS = frozenset({LIVEKIT_CHAT_TOPIC, "hermes.chat"})
-
-
 def check_livekit_requirements() -> bool:
     """Return True when the LiveKit realtime SDK is importable."""
     return LIVEKIT_AVAILABLE
