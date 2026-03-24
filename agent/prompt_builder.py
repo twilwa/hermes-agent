@@ -212,6 +212,12 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "livekit": (
+        "You are in a LiveKit room. Treat this as a real-time voice-first session "
+        "with shared text and spoken turns. Keep replies concise and transcript-friendly. "
+        "You can include MEDIA:/absolute/path/to/file to share files in the room. "
+        "Do not assume Discord or any Discord audio bridge is present."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

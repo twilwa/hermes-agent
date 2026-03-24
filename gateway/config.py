@@ -2,7 +2,7 @@
 Gateway configuration management.
 
 Handles loading and validating configuration for:
-- Connected platforms (Telegram, Discord, WhatsApp)
+- Connected platforms (Telegram, Discord, WhatsApp, LiveKit)
 - Home channels for each platform
 - Session reset policies
 - Delivery preferences
@@ -42,13 +42,14 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 
 
 class Platform(Enum):
-    """Supported messaging platforms."""
+    """Supported gateway platforms."""
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    LIVEKIT = "livekit"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
@@ -261,6 +262,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # LiveKit uses API URL + API key/secret credentials, with an optional home room
+            elif platform == Platform.LIVEKIT and config.extra.get("url") and config.api_key and config.extra.get("api_secret"):
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -562,23 +566,40 @@ def load_gateway_config() -> GatewayConfig:
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
-    _token_env_names = {
-        Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
-        Platform.DISCORD: "DISCORD_BOT_TOKEN",
-        Platform.SLACK: "SLACK_BOT_TOKEN",
-        Platform.MATTERMOST: "MATTERMOST_TOKEN",
-        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+    _credential_env_names = {
+        Platform.TELEGRAM: ("token", "TELEGRAM_BOT_TOKEN"),
+        Platform.DISCORD: ("token", "DISCORD_BOT_TOKEN"),
+        Platform.SLACK: ("token", "SLACK_BOT_TOKEN"),
+        Platform.MATTERMOST: ("token", "MATTERMOST_TOKEN"),
+        Platform.MATRIX: ("token", "MATRIX_ACCESS_TOKEN"),
+        Platform.LIVEKIT: ("api_key", "LIVEKIT_API_KEY"),
+    }
+    _extra_credential_env_names = {
+        Platform.LIVEKIT: ("api_secret", "LIVEKIT_API_SECRET"),
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
             continue
-        env_name = _token_env_names.get(platform)
-        if env_name and pconfig.token is not None and not pconfig.token.strip():
-            logger.warning(
-                "%s is enabled but %s is empty. "
-                "The adapter will likely fail to connect.",
-                platform.value, env_name,
-            )
+        credential = _credential_env_names.get(platform)
+        if credential:
+            field_name, env_name = credential
+            value = getattr(pconfig, field_name)
+            if value is not None and not str(value).strip():
+                logger.warning(
+                    "%s is enabled but %s is empty. "
+                    "The adapter will likely fail to connect.",
+                    platform.value, env_name,
+                )
+        extra_credential = _extra_credential_env_names.get(platform)
+        if extra_credential:
+            field_name, env_name = extra_credential
+            value = pconfig.extra.get(field_name)
+            if value is not None and not str(value).strip():
+                logger.warning(
+                    "%s is enabled but %s is empty. "
+                    "The adapter will likely fail to connect.",
+                    platform.value, env_name,
+                )
 
     return config
 
@@ -674,6 +695,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SIGNAL,
                 chat_id=signal_home,
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # LiveKit
+    livekit_url = os.getenv("LIVEKIT_URL")
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+    if livekit_url and livekit_api_key and livekit_api_secret:
+        if Platform.LIVEKIT not in config.platforms:
+            config.platforms[Platform.LIVEKIT] = PlatformConfig()
+        config.platforms[Platform.LIVEKIT].enabled = True
+        config.platforms[Platform.LIVEKIT].api_key = livekit_api_key
+        config.platforms[Platform.LIVEKIT].extra.update({
+            "url": livekit_url,
+            "api_secret": livekit_api_secret,
+        })
+        livekit_home = os.getenv("LIVEKIT_HOME_ROOM") or os.getenv("LIVEKIT_ROOM")
+        if livekit_home:
+            config.platforms[Platform.LIVEKIT].home_channel = HomeChannel(
+                platform=Platform.LIVEKIT,
+                chat_id=livekit_home,
+                name=os.getenv("LIVEKIT_HOME_ROOM_NAME") or os.getenv("LIVEKIT_ROOM_NAME", "Home"),
             )
 
     # Mattermost
@@ -825,5 +867,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-

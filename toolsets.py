@@ -321,6 +321,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-livekit": {
+        "description": "LiveKit bot toolset - room-native voice and text sessions",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-homeassistant": {
         "description": "Home Assistant bot toolset - smart home event monitoring and control",
         "tools": _HERMES_CORE_TOOLS,
@@ -340,9 +346,9 @@ TOOLSETS = {
     },
 
     "hermes-gateway": {
-        "description": "Gateway toolset - union of all messaging platform tools",
+        "description": "Gateway toolset - union of all gateway platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-livekit", "hermes-homeassistant", "hermes-email", "hermes-sms"]
     }
 }
 
