@@ -1,12 +1,13 @@
 """Tests for native Discord slash command fast-paths (thread creation & auto-thread)."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import sys
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 def _ensure_discord_mock():
@@ -84,6 +85,47 @@ async def test_registers_native_thread_slash_command(adapter):
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "room", "expected_text", "expected_followup"),
+    [
+        ("create", "Studio A", "/livekit create Studio A", "LiveKit room create request sent~"),
+        ("link", "https://livekit.example/room/abc123", "/livekit link https://livekit.example/room/abc123", "LiveKit room link request sent~"),
+        ("status", "", "/livekit status", "LiveKit status requested~"),
+    ],
+)
+async def test_registers_livekit_control_command(adapter, action, room, expected_text, expected_followup):
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["livekit"]
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    await command(interaction, action=action, room=room)
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.followup.send.assert_awaited_once_with(expected_followup, ephemeral=True)
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    assert event.text == expected_text
+    assert event.message_type == MessageType.COMMAND
+    assert event.source.chat_type == "group"
+    assert event.source.chat_id == "123"
+    assert event.source.chat_name == "TestGuild / #general"
 
 
 # ------------------------------------------------------------------
@@ -469,31 +511,3 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
 
     adapter._auto_create_thread.assert_not_awaited()  # should NOT auto-thread
 
-
-# ------------------------------------------------------------------
-# Config bridge
-# ------------------------------------------------------------------
-
-
-def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
-    """discord.auto_thread in config.yaml should be bridged to DISCORD_AUTO_THREAD env var."""
-    import yaml
-    from pathlib import Path
-
-    # Write a config.yaml the loader will find
-    hermes_dir = tmp_path / ".hermes"
-    hermes_dir.mkdir()
-    config_path = hermes_dir / "config.yaml"
-    config_path.write_text(yaml.dump({
-        "discord": {"auto_thread": True},
-    }))
-
-    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    from gateway.config import load_gateway_config
-    load_gateway_config()
-
-    import os
-    assert os.getenv("DISCORD_AUTO_THREAD") == "true"

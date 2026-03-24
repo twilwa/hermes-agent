@@ -1423,6 +1423,21 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+    async def _run_livekit_slash(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        room: str = "",
+    ) -> None:
+        """Dispatch a LiveKit control command through the standard Discord flow."""
+        command_text = f"/livekit {action} {room}".strip()
+        followup_msg = {
+            "create": "LiveKit room create request sent~",
+            "link": "LiveKit room link request sent~",
+            "status": "LiveKit status requested~",
+        }.get(action, "LiveKit control request sent~")
+        await self._run_simple_slash(interaction, command_text, followup_msg)
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -1466,6 +1481,25 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="status", description="Show Hermes session status")
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
+
+        @tree.command(name="livekit", description="Create, link, or inspect a LiveKit room")
+        @discord.app_commands.describe(
+            action="What to do: create, link, or status.",
+            room="Room name or room link. Required for create/link.",
+        )
+        @discord.app_commands.choices(
+            action=[
+                discord.app_commands.Choice(name="create — create a room", value="create"),
+                discord.app_commands.Choice(name="link — link an existing room", value="link"),
+                discord.app_commands.Choice(name="status — show room status and join info", value="status"),
+            ]
+        )
+        async def slash_livekit(
+            interaction: discord.Interaction,
+            action: str = "status",
+            room: str = "",
+        ):
+            await self._run_livekit_slash(interaction, action, room)
 
         @tree.command(name="sethome", description="Set this chat as the home channel")
         async def slash_sethome(interaction: discord.Interaction):
