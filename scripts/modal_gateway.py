@@ -20,6 +20,10 @@ REMOTE_HERMES_HOME = f"{REMOTE_STATE_ROOT}/home"
 
 APP_NAME = os.getenv("HERMES_MODAL_APP_NAME", "hermes-gateway")
 VOLUME_NAME = os.getenv("HERMES_MODAL_VOLUME_NAME", f"{APP_NAME}-state")
+VOICE_RUNTIME_APT_PACKAGES = (
+    "ffmpeg",
+    "libopus0",
+)
 
 
 def _read_optional_file(path: Path) -> str | None:
@@ -72,6 +76,7 @@ state_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install(*VOICE_RUNTIME_APT_PACKAGES)
     .pip_install_from_pyproject(
         str(LOCAL_PROJECT_ROOT / "pyproject.toml"),
         optional_dependencies=["messaging"],
