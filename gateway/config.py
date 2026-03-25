@@ -254,6 +254,13 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
+            # LiveKit needs a URL plus either a pre-minted token or API credentials.
+            if platform == Platform.LIVEKIT:
+                if config.extra.get("url") and (
+                    config.token or (config.api_key and config.extra.get("api_secret"))
+                ):
+                    connected.append(platform)
+                continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
                 connected.append(platform)
@@ -262,9 +269,6 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
-                connected.append(platform)
-            # LiveKit uses API URL + API key/secret credentials, with an optional home room
-            elif platform == Platform.LIVEKIT and config.extra.get("url") and config.api_key and config.extra.get("api_secret"):
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -699,21 +703,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # LiveKit
     livekit_url = os.getenv("LIVEKIT_URL")
+    livekit_token = os.getenv("LIVEKIT_TOKEN")
     livekit_api_key = os.getenv("LIVEKIT_API_KEY")
     livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
-    if any(value is not None for value in (livekit_url, livekit_api_key, livekit_api_secret)):
-        if livekit_url and livekit_api_key and livekit_api_secret:
+    if any(value is not None for value in (livekit_url, livekit_token, livekit_api_key, livekit_api_secret)):
+        if livekit_url and (livekit_token or (livekit_api_key and livekit_api_secret)):
             if Platform.LIVEKIT not in config.platforms:
                 config.platforms[Platform.LIVEKIT] = PlatformConfig()
             config.platforms[Platform.LIVEKIT].enabled = True
-            config.platforms[Platform.LIVEKIT].api_key = livekit_api_key
-            config.platforms[Platform.LIVEKIT].extra.update({
-                "url": livekit_url,
-                "api_secret": livekit_api_secret,
-            })
+            config.platforms[Platform.LIVEKIT].extra["url"] = livekit_url
+            if livekit_token:
+                config.platforms[Platform.LIVEKIT].token = livekit_token
+            if livekit_api_key:
+                config.platforms[Platform.LIVEKIT].api_key = livekit_api_key
+            if livekit_api_secret:
+                config.platforms[Platform.LIVEKIT].extra["api_secret"] = livekit_api_secret
         else:
             logger.warning(
-                "LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must all be set to enable LiveKit"
+                "LIVEKIT_URL plus either LIVEKIT_TOKEN or LIVEKIT_API_KEY/LIVEKIT_API_SECRET must be set to enable LiveKit"
             )
 
     livekit_home = os.getenv("LIVEKIT_HOME_ROOM") or os.getenv("LIVEKIT_ROOM")

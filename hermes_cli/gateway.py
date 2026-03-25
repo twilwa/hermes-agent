@@ -1266,11 +1266,12 @@ def _platform_status(platform: dict) -> str:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "livekit":
+        token = get_env_value("LIVEKIT_TOKEN")
         api_key = get_env_value("LIVEKIT_API_KEY")
         api_secret = get_env_value("LIVEKIT_API_SECRET")
-        if val and api_key and api_secret:
+        if val and (token or (api_key and api_secret)):
             return "configured"
-        if val or api_key or api_secret:
+        if val or token or api_key or api_secret:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "email":

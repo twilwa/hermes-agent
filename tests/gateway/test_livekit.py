@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageType
 from gateway.platforms.livekit import LiveKitAdapter, check_livekit_requirements
 from gateway.session import build_session_key
@@ -86,6 +86,82 @@ async def test_connect_registers_room_handlers(monkeypatch):
     await adapter.disconnect()
     room.disconnect.assert_awaited_once()
     assert adapter.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_connect_generates_join_token_from_api_credentials(monkeypatch):
+    room = FakeRoom()
+
+    issued_tokens = []
+
+    class FakeVideoGrants:
+        def __init__(self, *, room_join, room):
+            self.room_join = room_join
+            self.room = room
+
+    class FakeAccessToken:
+        def __init__(self, api_key, api_secret):
+            self.api_key = api_key
+            self.api_secret = api_secret
+            self.identity = None
+            self.name = None
+            self.grants = None
+            issued_tokens.append(self)
+
+        def with_identity(self, identity):
+            self.identity = identity
+            return self
+
+        def with_name(self, name):
+            self.name = name
+            return self
+
+        def with_grants(self, grants):
+            self.grants = grants
+            return self
+
+        def to_jwt(self):
+            return f"jwt::{self.api_key}::{self.api_secret}::{self.identity}::{self.name}::{self.grants.room}"
+
+    config = PlatformConfig(
+        enabled=True,
+        api_key="lk-key",
+        home_channel=HomeChannel(
+            platform=Platform.LIVEKIT,
+            chat_id="voice-room",
+            name="Voice Room",
+        ),
+    )
+    config.extra = {
+        "url": "wss://livekit.example.test",
+        "api_secret": "lk-secret",
+    }
+    adapter = LiveKitAdapter(config)
+
+    monkeypatch.setattr("gateway.platforms.livekit.LIVEKIT_AVAILABLE", True)
+    monkeypatch.setattr("gateway.platforms.livekit.LIVEKIT_API_AVAILABLE", True)
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.rtc",
+        SimpleNamespace(Room=lambda: room),
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.api",
+        SimpleNamespace(
+            AccessToken=FakeAccessToken,
+            VideoGrants=FakeVideoGrants,
+        ),
+    )
+
+    connected = await adapter.connect()
+
+    assert connected is True
+    room.connect.assert_awaited_once_with(
+        "wss://livekit.example.test",
+        "jwt::lk-key::lk-secret::hermes-livekit::Hermes::voice-room",
+    )
+    assert len(issued_tokens) == 1
+    assert issued_tokens[0].grants.room_join is True
+    assert issued_tokens[0].grants.room == "voice-room"
 
 
 @pytest.mark.asyncio

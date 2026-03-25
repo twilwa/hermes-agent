@@ -32,6 +32,14 @@ except ImportError:
     rtc = None
     LIVEKIT_AVAILABLE = False
 
+try:
+    from livekit import api
+
+    LIVEKIT_API_AVAILABLE = True
+except ImportError:
+    api = None
+    LIVEKIT_API_AVAILABLE = False
+
 
 class _LiveKitPlatformFallback(Enum):
     LIVEKIT = "livekit"
@@ -57,10 +65,36 @@ class LiveKitAdapter(BasePlatformAdapter):
             config.extra.get("url", "")
             or os.getenv("LIVEKIT_URL", "")
         ).rstrip("/")
-        self._token: str = config.token or config.extra.get("token", "") or os.getenv("LIVEKIT_TOKEN", "")
+        self._access_token: str = (
+            config.token
+            or config.extra.get("token", "")
+            or os.getenv("LIVEKIT_TOKEN", "")
+        )
+        self._api_key: str = (
+            config.api_key
+            or config.extra.get("api_key", "")
+            or os.getenv("LIVEKIT_API_KEY", "")
+        )
+        self._api_secret: str = (
+            config.extra.get("api_secret", "")
+            or os.getenv("LIVEKIT_API_SECRET", "")
+        )
         self._configured_room_name: str = (
             config.extra.get("room_name", "")
+            or (config.home_channel.chat_id if config.home_channel else "")
+            or os.getenv("LIVEKIT_HOME_ROOM", "")
+            or os.getenv("LIVEKIT_ROOM", "")
             or os.getenv("LIVEKIT_ROOM_NAME", "")
+        )
+        self._join_identity: str = (
+            config.extra.get("participant_identity", "")
+            or os.getenv("LIVEKIT_PARTICIPANT_IDENTITY", "")
+            or "hermes-livekit"
+        )
+        self._join_name: str = (
+            config.extra.get("participant_name", "")
+            or os.getenv("LIVEKIT_PARTICIPANT_NAME", "")
+            or "Hermes"
         )
         self._chat_topic: str = config.extra.get("chat_topic", LIVEKIT_CHAT_TOPIC)
         self._typing_topic: str = config.extra.get("typing_topic", LIVEKIT_TYPING_TOPIC)
@@ -98,8 +132,8 @@ class LiveKitAdapter(BasePlatformAdapter):
         if not self._url:
             logger.error("[LiveKit] LIVEKIT_URL not configured")
             return False
-        if not self._token:
-            logger.error("[LiveKit] LiveKit access token not configured")
+        access_token = self._resolved_access_token()
+        if not access_token:
             return False
 
         current_task = asyncio.current_task()
@@ -111,7 +145,7 @@ class LiveKitAdapter(BasePlatformAdapter):
         try:
             self._room = rtc.Room()
             self._register_room_handlers(self._room)
-            await self._room.connect(self._url, self._token)
+            await self._room.connect(self._url, access_token)
             self._snapshot_room_participants()
             self._mark_connected()
             logger.info(
@@ -127,6 +161,41 @@ class LiveKitAdapter(BasePlatformAdapter):
             self._set_fatal_error("livekit_connect_error", message, retryable=True)
             logger.error("[LiveKit] %s", message, exc_info=True)
             return False
+
+    def _resolved_access_token(self) -> Optional[str]:
+        if self._access_token:
+            return self._access_token
+        return self._generated_access_token()
+
+    def _generated_access_token(self) -> Optional[str]:
+        if not self._api_key or not self._api_secret:
+            logger.error(
+                "[LiveKit] Configure LIVEKIT_TOKEN or LIVEKIT_API_KEY/LIVEKIT_API_SECRET"
+            )
+            return None
+        if not LIVEKIT_API_AVAILABLE:
+            logger.error(
+                "[LiveKit] livekit-api package not installed; install livekit-api or set LIVEKIT_TOKEN"
+            )
+            return None
+
+        room_name = self._resolved_room_name()
+        try:
+            return (
+                api.AccessToken(self._api_key, self._api_secret)
+                .with_identity(self._join_identity)
+                .with_name(self._join_name)
+                .with_grants(
+                    api.VideoGrants(
+                        room_join=True,
+                        room=room_name,
+                    )
+                )
+                .to_jwt()
+            )
+        except Exception as exc:
+            logger.error("[LiveKit] access token generation failed: %s", exc, exc_info=True)
+            return None
 
     async def disconnect(self) -> None:
         """Leave the room and stop background event tasks."""

@@ -78,6 +78,21 @@ class TestGetConnectedPlatforms:
 
         assert Platform.LIVEKIT in connected
 
+    def test_returns_livekit_when_url_and_token_are_configured(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.LIVEKIT: PlatformConfig(
+                    enabled=True,
+                    token="lk-token",
+                    extra={"url": "https://livekit.example"},
+                ),
+            },
+        )
+
+        connected = config.get_connected_platforms()
+
+        assert Platform.LIVEKIT in connected
+
     def test_empty_platforms(self):
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
@@ -243,6 +258,7 @@ class TestLoadGatewayConfig:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.delenv("LIVEKIT_URL", raising=False)
+        monkeypatch.delenv("LIVEKIT_TOKEN", raising=False)
         monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
         monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
         monkeypatch.delenv("LIVEKIT_HOME_ROOM", raising=False)
@@ -259,3 +275,17 @@ class TestLoadGatewayConfig:
 
         assert Platform.LIVEKIT not in config.get_connected_platforms()
         assert any("enable LiveKit" in record.message for record in caplog.records)
+
+    def test_livekit_token_env_enables_platform(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
+        monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("LIVEKIT_URL", "https://livekit.example")
+        monkeypatch.setenv("LIVEKIT_TOKEN", "lk-token")
+
+        config = load_gateway_config()
+
+        assert Platform.LIVEKIT in config.get_connected_platforms()
+        assert config.platforms[Platform.LIVEKIT].token == "lk-token"

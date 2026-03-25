@@ -183,6 +183,13 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
         (
             {
                 "LIVEKIT_URL": "wss://livekit.example",
+                "LIVEKIT_TOKEN": "lk-token",
+            },
+            "configured",
+        ),
+        (
+            {
+                "LIVEKIT_URL": "wss://livekit.example",
                 "LIVEKIT_API_KEY": "lk-key",
                 "LIVEKIT_API_SECRET": "lk-secret",
             },
@@ -191,7 +198,7 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     ],
 )
 def test_livekit_platform_status(monkeypatch, env_values, expected):
-    for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+    for name in ("LIVEKIT_URL", "LIVEKIT_TOKEN", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env_values.items():
         monkeypatch.setenv(name, value)
