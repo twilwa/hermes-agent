@@ -199,6 +199,32 @@ class TestMirrorToSession:
         assert msg["mirror_source"] == "livekit"
         assert msg["mirror_linked_chat_id"] == "room-abc"
 
+    def test_unlinked_room_does_not_mirror(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "linked": {
+                "session_id": "sess_livekit",
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "guild-123",
+                    "chat_id_alt": "room-abc",
+                },
+                "updated_at": "2026-03-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite"):
+            result = mirror_to_session(
+                "discord",
+                "room-abc",
+                "LiveKit room connected",
+                source_label="livekit",
+            )
+
+        assert result is False
+        assert not (sessions_dir / "sess_livekit.jsonl").exists()
+
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "topic_a": {

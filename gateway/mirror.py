@@ -28,6 +28,7 @@ def mirror_to_session(
     message_text: str,
     source_label: str = "cli",
     thread_id: Optional[str] = None,
+    *,
     linked_chat_id: Optional[str] = None,
 ) -> bool:
     """
@@ -88,6 +89,7 @@ def _find_session_id(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    *,
     linked_chat_id: Optional[str] = None,
 ) -> Optional[str]:
     """
