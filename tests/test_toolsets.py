@@ -21,6 +21,12 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_livekit_toolset_is_registered(self):
+        ts = get_toolset("hermes-livekit")
+
+        assert ts is not None
+        assert set(ts["tools"]) == set(get_toolset("hermes-telegram")["tools"])
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
@@ -136,8 +142,11 @@ class TestToolsetConsistency:
 
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets should have the same tools."""
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-livekit", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_hermes_gateway_includes_livekit(self):
+        assert "hermes-livekit" in TOOLSETS["hermes-gateway"]["includes"]

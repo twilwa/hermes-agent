@@ -63,6 +63,21 @@ class TestGetConnectedPlatforms:
         assert Platform.DISCORD not in connected
         assert Platform.SLACK not in connected
 
+    def test_returns_livekit_when_url_key_and_secret_are_configured(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.LIVEKIT: PlatformConfig(
+                    enabled=True,
+                    api_key="lk_key",
+                    extra={"url": "https://livekit.example", "api_secret": "lk_secret"},
+                ),
+            },
+        )
+
+        connected = config.get_connected_platforms()
+
+        assert Platform.LIVEKIT in connected
+
     def test_empty_platforms(self):
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
@@ -192,3 +207,55 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_livekit_home_room_env_applies_to_yaml_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  livekit:\n"
+            "    enabled: true\n"
+            "    api_key: lk_key\n"
+            "    extra:\n"
+            "      url: https://livekit.example\n"
+            "      api_secret: lk_secret\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv("LIVEKIT_URL", raising=False)
+        monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
+        monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
+        monkeypatch.delenv("LIVEKIT_ROOM", raising=False)
+        monkeypatch.delenv("LIVEKIT_ROOM_NAME", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("LIVEKIT_HOME_ROOM", "voice-room")
+        monkeypatch.setenv("LIVEKIT_HOME_ROOM_NAME", "Voice Room")
+
+        config = load_gateway_config()
+
+        assert Platform.LIVEKIT in config.get_connected_platforms()
+        assert config.platforms[Platform.LIVEKIT].home_channel is not None
+        assert config.platforms[Platform.LIVEKIT].home_channel.chat_id == "voice-room"
+        assert config.platforms[Platform.LIVEKIT].home_channel.name == "Voice Room"
+
+    def test_livekit_partial_env_warns_and_does_not_enable_platform(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.delenv("LIVEKIT_URL", raising=False)
+        monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
+        monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
+        monkeypatch.delenv("LIVEKIT_HOME_ROOM", raising=False)
+        monkeypatch.delenv("LIVEKIT_ROOM", raising=False)
+        monkeypatch.delenv("LIVEKIT_HOME_ROOM_NAME", raising=False)
+        monkeypatch.delenv("LIVEKIT_ROOM_NAME", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("LIVEKIT_URL", "https://livekit.example")
+        monkeypatch.setenv("LIVEKIT_API_KEY", "")
+        monkeypatch.setenv("LIVEKIT_API_SECRET", "")
+
+        with caplog.at_level("WARNING"):
+            config = load_gateway_config()
+
+        assert Platform.LIVEKIT not in config.get_connected_platforms()
+        assert any("enable LiveKit" in record.message for record in caplog.records)

@@ -701,18 +701,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     livekit_url = os.getenv("LIVEKIT_URL")
     livekit_api_key = os.getenv("LIVEKIT_API_KEY")
     livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
-    if livekit_url and livekit_api_key and livekit_api_secret:
-        if Platform.LIVEKIT not in config.platforms:
-            config.platforms[Platform.LIVEKIT] = PlatformConfig()
-        config.platforms[Platform.LIVEKIT].enabled = True
-        config.platforms[Platform.LIVEKIT].api_key = livekit_api_key
-        config.platforms[Platform.LIVEKIT].extra.update({
-            "url": livekit_url,
-            "api_secret": livekit_api_secret,
-        })
-        livekit_home = os.getenv("LIVEKIT_HOME_ROOM") or os.getenv("LIVEKIT_ROOM")
-        if livekit_home:
-            config.platforms[Platform.LIVEKIT].home_channel = HomeChannel(
+    if any(value is not None for value in (livekit_url, livekit_api_key, livekit_api_secret)):
+        if livekit_url and livekit_api_key and livekit_api_secret:
+            if Platform.LIVEKIT not in config.platforms:
+                config.platforms[Platform.LIVEKIT] = PlatformConfig()
+            config.platforms[Platform.LIVEKIT].enabled = True
+            config.platforms[Platform.LIVEKIT].api_key = livekit_api_key
+            config.platforms[Platform.LIVEKIT].extra.update({
+                "url": livekit_url,
+                "api_secret": livekit_api_secret,
+            })
+        else:
+            logger.warning(
+                "LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must all be set to enable LiveKit"
+            )
+
+    livekit_home = os.getenv("LIVEKIT_HOME_ROOM") or os.getenv("LIVEKIT_ROOM")
+    if livekit_home:
+        livekit_config = config.platforms.get(Platform.LIVEKIT)
+        if livekit_config and livekit_config.enabled:
+            livekit_config.home_channel = HomeChannel(
                 platform=Platform.LIVEKIT,
                 chat_id=livekit_home,
                 name=os.getenv("LIVEKIT_HOME_ROOM_NAME") or os.getenv("LIVEKIT_ROOM_NAME", "Home"),

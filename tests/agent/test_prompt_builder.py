@@ -699,8 +699,14 @@ class TestPromptBuilderConstants:
         assert "whatsapp" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
+        assert "livekit" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+
+    def test_livekit_hint_matches_voice_first_session_behavior(self):
+        hint = PLATFORM_HINTS["livekit"]
+        assert "voice-first session" in hint
+        assert "Discord audio bridge" in hint
 
 
 # =========================================================================
