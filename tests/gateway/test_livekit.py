@@ -1,6 +1,7 @@
 # ABOUTME: Focused tests for the LiveKit gateway adapter's room wiring and event normalization.
 # ABOUTME: Covers connection hooks, outbound publishing, typing packets, chat info, and MessageEvent creation.
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageType
 from gateway.platforms.livekit import LiveKitAdapter, check_livekit_requirements
+from gateway.session import build_session_key
 
 
 class FakeParticipant:
@@ -192,11 +194,13 @@ async def test_text_streams_are_normalized_into_message_events():
     assert event.source.chat_type == "dm"
     assert event.source.user_id == "user-1"
     assert event.source.user_name == "Ada"
+    assert event.source.user_id_alt == "user-1"
+    assert event.source.chat_id_alt == "RM_123"
     assert event.source.chat_topic == "lk.chat"
 
 
 @pytest.mark.asyncio
-async def test_data_packets_are_normalized_into_voice_events_when_marked():
+async def test_data_packets_are_normalized_into_synthetic_text_events_when_marked_as_voice():
     room = FakeRoom()
     adapter = make_adapter()
     adapter._room = room
@@ -213,6 +217,158 @@ async def test_data_packets_are_normalized_into_voice_events_when_marked():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "transcribed speech"
-    assert event.message_type == MessageType.VOICE
+    assert event.message_type == MessageType.TEXT
     assert event.reply_to_message_id == "stream-10"
     assert event.source.user_id == "user-1"
+    assert event.source.user_id_alt == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_transcriptions_become_synthetic_text_message_events():
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter.handle_message = AsyncMock()
+
+    segments = [
+        SimpleNamespace(text="first"),
+        SimpleNamespace(text="second"),
+    ]
+
+    await adapter._consume_transcription(segments, room.remote_participants["user-1"])
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "first second"
+    assert event.message_type == MessageType.TEXT
+    assert event.source.chat_id == "team-room"
+    assert event.source.user_id == "user-1"
+    assert event.source.user_id_alt == "user-1"
+    assert event.source.chat_topic == "transcription"
+
+
+@pytest.mark.asyncio
+async def test_same_participant_in_same_room_reuses_session_key():
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter.handle_message = AsyncMock()
+
+    reader = SimpleNamespace(
+        info=SimpleNamespace(id="stream-1", topic="lk.chat", attributes={}),
+        read_all=AsyncMock(return_value="hello"),
+    )
+    packet = SimpleNamespace(
+        data=b'{"type":"chat","text":"follow up"}',
+        topic="lk.chat",
+        participant=room.remote_participants["user-1"],
+    )
+
+    await adapter._consume_text_stream(reader, "user-1")
+    await adapter._consume_data_packet(packet)
+
+    first_event, second_event = [call.args[0] for call in adapter.handle_message.await_args_list]
+    assert build_session_key(first_event.source) == build_session_key(second_event.source)
+    assert first_event.source.chat_id == second_event.source.chat_id == "team-room"
+    assert first_event.source.user_id_alt == second_event.source.user_id_alt == "user-1"
+    assert first_event.source.chat_id_alt == second_event.source.chat_id_alt == "RM_123"
+
+
+@pytest.mark.asyncio
+async def test_local_publications_are_ignored_on_ingress():
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter.handle_message = AsyncMock()
+
+    local_reader = SimpleNamespace(
+        info=SimpleNamespace(id="stream-local", topic="lk.chat", attributes={}),
+        read_all=AsyncMock(return_value="self echo"),
+    )
+    local_packet = SimpleNamespace(
+        data=b'{"type":"chat","text":"self echo"}',
+        topic="lk.chat",
+        participant=room.local_participant,
+    )
+
+    await adapter._consume_text_stream(local_reader, "hermes")
+    await adapter._consume_data_packet(local_packet)
+    await adapter._consume_transcription([SimpleNamespace(text="self echo")], room.local_participant)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_room_disconnect_retries_after_clearing_stale_state():
+    room = FakeRoom()
+    adapter = make_adapter(
+        max_reconnect_attempts=2,
+        reconnect_initial_delay_seconds=0,
+        reconnect_max_delay_seconds=0,
+    )
+    adapter._room = room
+    adapter._participants["user-1"] = {
+        "identity": "user-1",
+        "sid": "PA_user1",
+        "name": "Ada",
+        "metadata": None,
+        "attributes": {},
+        "participant": room.remote_participants["user-1"],
+    }
+    stale_task = asyncio.create_task(asyncio.sleep(60))
+    adapter._room_tasks.add(stale_task)
+    adapter._mark_connected()
+
+    observed_states = []
+
+    async def fake_connect():
+        observed_states.append(
+            {
+                "room": adapter._room,
+                "participants": dict(adapter._participants),
+                "stale_task_done": stale_task.done(),
+            }
+        )
+        if len(observed_states) == 1:
+            return False
+        adapter._mark_connected()
+        return True
+
+    adapter.connect = AsyncMock(side_effect=fake_connect)
+
+    adapter._on_room_disconnected("transport_restart")
+
+    await asyncio.wait_for(adapter._reconnect_task, 1)
+
+    assert adapter.connect.await_count == 2
+    assert observed_states[0] == {
+        "room": None,
+        "participants": {},
+        "stale_task_done": True,
+    }
+    assert adapter.is_connected is True
+    assert adapter._reconnect_task is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_reconnect_and_clears_room_state():
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter._participants["user-1"] = {
+        "identity": "user-1",
+        "sid": "PA_user1",
+        "name": "Ada",
+        "metadata": None,
+        "attributes": {},
+        "participant": room.remote_participants["user-1"],
+    }
+    adapter._reconnect_task = asyncio.create_task(asyncio.sleep(60))
+
+    await adapter.disconnect()
+
+    room.disconnect.assert_awaited_once()
+    assert adapter._room is None
+    assert adapter._participants == {}
+    assert adapter._reconnect_task is None
+    assert adapter.is_connected is False

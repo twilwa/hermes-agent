@@ -33,6 +33,8 @@ LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", _LiveKitPlatformFallback.LIVEKIT
 
 LIVEKIT_CHAT_TOPIC = "lk.chat"
 LIVEKIT_TYPING_TOPIC = "hermes.typing"
+
+
 def check_livekit_requirements() -> bool:
     """Return True when the LiveKit realtime SDK is importable."""
     return LIVEKIT_AVAILABLE
@@ -60,6 +62,20 @@ class LiveKitAdapter(BasePlatformAdapter):
         self._room: Any = None
         self._room_tasks: set[asyncio.Task] = set()
         self._participants: Dict[str, Dict[str, Any]] = {}
+        self._manual_disconnect = False
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._max_reconnect_attempts = max(
+            1,
+            int(config.extra.get("max_reconnect_attempts", 3) or 3),
+        )
+        self._reconnect_initial_delay_seconds = max(
+            0.0,
+            float(config.extra.get("reconnect_initial_delay_seconds", 1.0) or 0.0),
+        )
+        self._reconnect_max_delay_seconds = max(
+            self._reconnect_initial_delay_seconds,
+            float(config.extra.get("reconnect_max_delay_seconds", 8.0) or 0.0),
+        )
 
     @property
     def name(self) -> str:
@@ -67,6 +83,7 @@ class LiveKitAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the configured LiveKit room and register room callbacks."""
+        self._manual_disconnect = False
         if not LIVEKIT_AVAILABLE:
             logger.error("[LiveKit] livekit package not installed")
             return False
@@ -76,6 +93,12 @@ class LiveKitAdapter(BasePlatformAdapter):
         if not self._token:
             logger.error("[LiveKit] LiveKit access token not configured")
             return False
+
+        current_task = asyncio.current_task()
+        if self._reconnect_task is not None and self._reconnect_task is not current_task:
+            await self._cancel_reconnect_task()
+        if self._room is not None or self._room_tasks:
+            await self._reset_room_state(disconnect_room=False)
 
         try:
             self._room = rtc.Room()
@@ -98,21 +121,9 @@ class LiveKitAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Leave the room and stop background event tasks."""
-        room_tasks = list(self._room_tasks)
-        for task in room_tasks:
-            task.cancel()
-        if room_tasks:
-            await asyncio.gather(*room_tasks, return_exceptions=True)
-        self._room_tasks.clear()
-
-        room = self._room
-        self._room = None
-        self._participants.clear()
-        if room is not None:
-            try:
-                await room.disconnect()
-            except Exception as exc:
-                logger.warning("[LiveKit] disconnect failed: %s", exc, exc_info=True)
+        self._manual_disconnect = True
+        await self._cancel_reconnect_task()
+        await self._reset_room_state(disconnect_room=True)
 
         self._mark_disconnected()
         logger.info("[LiveKit] Disconnected")
@@ -258,6 +269,11 @@ class LiveKitAdapter(BasePlatformAdapter):
     def _on_room_disconnected(self, reason: Any) -> None:
         logger.info("[LiveKit] room disconnected reason=%s", reason)
         self._mark_disconnected()
+        if self._manual_disconnect:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._run_reconnect_loop(reason))
 
     def _on_text_stream(self, reader: Any, participant_identity: str) -> None:
         self._track_task(
@@ -276,6 +292,8 @@ class LiveKitAdapter(BasePlatformAdapter):
         )
 
     async def _consume_text_stream(self, reader: Any, participant_identity: str) -> None:
+        if self._is_local_identity(participant_identity):
+            return
         text = (await reader.read_all()).strip()
         if not text:
             return
@@ -305,28 +323,21 @@ class LiveKitAdapter(BasePlatformAdapter):
         if isinstance(payload, dict):
             text = str(payload.get("text", "") or "").strip()
             reply_to = payload.get("reply_to")
-            raw_type = str(payload.get("message_type", "") or "").lower()
         else:
             text = payload.strip()
             reply_to = None
-            raw_type = ""
 
         if not text:
             return
 
-        if raw_type == MessageType.VOICE.value:
-            message_type = MessageType.VOICE
-        elif text.startswith("/"):
-            message_type = MessageType.COMMAND
-        else:
-            message_type = MessageType.TEXT
-
         participant = getattr(data_packet, "participant", None)
+        if self._is_local_participant(participant):
+            return
         event = self._build_message_event(
             text=text,
             participant=participant,
             raw_message=data_packet,
-            message_type=message_type,
+            message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
             message_id=self._message_id_from_packet(data_packet),
             chat_topic=topic,
             reply_to_message_id=str(reply_to) if reply_to else None,
@@ -334,6 +345,8 @@ class LiveKitAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _consume_transcription(self, segments: Iterable[Any], participant: Any) -> None:
+        if self._is_local_participant(participant):
+            return
         text = " ".join(
             self._strip_segment_text(getattr(segment, "text", ""))
             for segment in segments
@@ -345,7 +358,7 @@ class LiveKitAdapter(BasePlatformAdapter):
             text=text,
             participant=participant,
             raw_message=list(segments),
-            message_type=MessageType.VOICE,
+            message_type=MessageType.COMMAND if text.startswith("/") else MessageType.TEXT,
             message_id=None,
             chat_topic="transcription",
         )
@@ -369,7 +382,7 @@ class LiveKitAdapter(BasePlatformAdapter):
             user_id=self._participant_identity(participant),
             user_name=self._participant_name(participant),
             chat_topic=chat_topic,
-            user_id_alt=self._participant_sid(participant),
+            user_id_alt=self._participant_session_identity(participant),
             chat_id_alt=self._resolved_room_sid(),
         )
         return MessageEvent(
@@ -386,6 +399,61 @@ class LiveKitAdapter(BasePlatformAdapter):
         task = asyncio.create_task(coro)
         self._room_tasks.add(task)
         task.add_done_callback(self._room_tasks.discard)
+
+    async def _cancel_reconnect_task(self) -> None:
+        reconnect_task = self._reconnect_task
+        if reconnect_task is None:
+            return
+        self._reconnect_task = None
+        if reconnect_task.done() or reconnect_task is asyncio.current_task():
+            return
+        reconnect_task.cancel()
+        await asyncio.gather(reconnect_task, return_exceptions=True)
+
+    async def _reset_room_state(self, *, disconnect_room: bool) -> None:
+        room = self._room
+        room_tasks = [task for task in self._room_tasks if task is not asyncio.current_task()]
+        for task in room_tasks:
+            task.cancel()
+        if room_tasks:
+            await asyncio.gather(*room_tasks, return_exceptions=True)
+        self._room_tasks.clear()
+        self._participants.clear()
+        self._room = None
+        if disconnect_room and room is not None:
+            try:
+                await room.disconnect()
+            except Exception as exc:
+                logger.warning("[LiveKit] disconnect failed: %s", exc, exc_info=True)
+
+    async def _run_reconnect_loop(self, reason: Any) -> None:
+        try:
+            await self._reset_room_state(disconnect_room=False)
+            delay = self._reconnect_initial_delay_seconds
+            for attempt in range(1, self._max_reconnect_attempts + 1):
+                if self._manual_disconnect:
+                    return
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                logger.info(
+                    "[LiveKit] reconnect attempt %s/%s after reason=%s",
+                    attempt,
+                    self._max_reconnect_attempts,
+                    reason,
+                )
+                if await self.connect():
+                    return
+                delay = min(
+                    max(delay * 2, self._reconnect_initial_delay_seconds or 0.0),
+                    self._reconnect_max_delay_seconds,
+                )
+            logger.warning(
+                "[LiveKit] reconnect exhausted after %s attempts",
+                self._max_reconnect_attempts,
+            )
+        finally:
+            if self._reconnect_task is asyncio.current_task():
+                self._reconnect_task = None
 
     def _snapshot_room_participants(self) -> None:
         room = self._room
@@ -433,6 +501,15 @@ class LiveKitAdapter(BasePlatformAdapter):
             self._remember_participant(local)
             return local
         return None
+
+    def _is_local_identity(self, participant_identity: Optional[str]) -> bool:
+        return bool(
+            participant_identity
+            and participant_identity == self._participant_identity(self._local_participant())
+        )
+
+    def _is_local_participant(self, participant: Any) -> bool:
+        return self._is_local_identity(self._participant_identity(participant))
 
     def _resolve_destination_identities(
         self,
@@ -484,6 +561,15 @@ class LiveKitAdapter(BasePlatformAdapter):
             return None
         sid = getattr(participant, "sid", None)
         return str(sid) if sid else None
+
+    def _participant_session_identity(self, participant: Any) -> Optional[str]:
+        cached = self._participants.get(self._participant_identity(participant) or "")
+        attributes = cached["attributes"] if cached else dict(getattr(participant, "attributes", {}) or {})
+        for key in ("hermes_session_identity", "session_identity", "identity"):
+            value = attributes.get(key)
+            if value:
+                return str(value)
+        return self._participant_identity(participant)
 
     @staticmethod
     def _participant_name(participant: Any) -> Optional[str]:
