@@ -1049,6 +1049,26 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "livekit",
+        "label": "LiveKit",
+        "emoji": "🎙️",
+        "token_var": "LIVEKIT_URL",
+        "configured_vars": ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"),
+        "setup_instructions": [
+            "1. Use a LiveKit Cloud project or self-hosted LiveKit server.",
+            "2. LiveKit owns the media plane in phase one; Discord is only the control surface.",
+            "3. Hermes needs the LiveKit URL, API key, and API secret to connect.",
+        ],
+        "vars": [
+            {"name": "LIVEKIT_URL", "prompt": "LiveKit server URL", "password": False,
+             "help": "Paste the LiveKit server URL or Cloud project URL."},
+            {"name": "LIVEKIT_API_KEY", "prompt": "LiveKit API key", "password": True,
+             "help": "Paste the LiveKit API key for the agent connection."},
+            {"name": "LIVEKIT_API_SECRET", "prompt": "LiveKit API secret", "password": True,
+             "help": "Paste the LiveKit API secret for the agent connection."},
+        ],
+    },
+    {
         "key": "slack",
         "label": "Slack",
         "emoji": "💼",
@@ -1245,6 +1265,14 @@ def _platform_status(platform: dict) -> str:
         if val or account:
             return "partially configured"
         return "not configured"
+    if platform.get("key") == "livekit":
+        api_key = get_env_value("LIVEKIT_API_KEY")
+        api_secret = get_env_value("LIVEKIT_API_SECRET")
+        if val and api_key and api_secret:
+            return "configured"
+        if val or api_key or api_secret:
+            return "partially configured"
+        return "not configured"
     if platform.get("key") == "email":
         pwd = get_env_value("EMAIL_PASSWORD")
         imap = get_env_value("EMAIL_IMAP_HOST")
@@ -1299,10 +1327,11 @@ def _runtime_health_lines() -> list[str]:
 
 
 def _setup_standard_platform(platform: dict):
-    """Interactive setup for Telegram, Discord, or Slack."""
+    """Interactive setup for messaging platforms."""
     emoji = platform["emoji"]
     label = platform["label"]
     token_var = platform["token_var"]
+    configured_vars = platform.get("configured_vars", (token_var,))
 
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
@@ -1314,8 +1343,8 @@ def _setup_standard_platform(platform: dict):
         for line in instructions:
             print_info(f"  {line}")
 
-    existing_token = get_env_value(token_var)
-    if existing_token:
+    existing_configured = all(get_env_value(name) for name in configured_vars)
+    if existing_configured:
         print()
         print_success(f"{label} is already configured.")
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
@@ -1327,7 +1356,7 @@ def _setup_standard_platform(platform: dict):
         print()
         print_info(f"  {var['help']}")
         existing = get_env_value(var["name"])
-        if existing and var["name"] != token_var:
+        if existing and var["name"] != token_var and not var.get("password", False):
             print_info(f"  Current: {existing}")
 
         # Allowlist fields get special handling for the deny-by-default security model
@@ -1372,7 +1401,11 @@ def _setup_standard_platform(platform: dict):
                     print_info("  Skipped — configure later with 'hermes gateway setup'")
             continue
 
-        value = prompt(f"  {var['prompt']}", password=var.get("password", False))
+        value = prompt(
+            f"  {var['prompt']}",
+            default=existing if existing and not var.get("password", False) else None,
+            password=var.get("password", False),
+        )
         if value:
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")

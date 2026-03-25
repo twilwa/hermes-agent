@@ -269,6 +269,14 @@ def show_status(args):
             status += f" (home: {home_channel})"
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
+
+    livekit_url = os.getenv("LIVEKIT_URL", "")
+    livekit_api_key = os.getenv("LIVEKIT_API_KEY", "")
+    livekit_api_secret = os.getenv("LIVEKIT_API_SECRET", "")
+    livekit_configured = bool(livekit_url and livekit_api_key and livekit_api_secret)
+    livekit_partial = bool(livekit_url or livekit_api_key or livekit_api_secret) and not livekit_configured
+    livekit_status = "configured" if livekit_configured else "partially configured" if livekit_partial else "not configured"
+    print(f"  {'LiveKit':<12}  {check_mark(livekit_configured)} {livekit_status}")
     
     # =========================================================================
     # Gateway Status

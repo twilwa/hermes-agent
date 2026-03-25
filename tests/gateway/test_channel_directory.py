@@ -10,8 +10,10 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _build_from_sessions,
+    build_channel_directory,
     DIRECTORY_PATH,
 )
+from gateway.room_links import save_room_link
 
 
 def _write_directory(tmp_path, platforms):
@@ -214,6 +216,35 @@ class TestBuildFromSessions:
         assert "Coaching Chat / topic 17587" in names
 
 
+class TestBuildChannelDirectory:
+    def test_includes_linked_livekit_rooms(self, tmp_path):
+        cache_file = tmp_path / "channel_directory.json"
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch("gateway.room_links.ROOM_LINKS_PATH", tmp_path / "room_links.json"), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_room_link(
+                "livekit",
+                "room-123",
+                "Sprint Room",
+                "discord",
+                "guild-456",
+                "thread-789",
+            )
+
+            directory = build_channel_directory({})
+
+        livekit_entries = directory["platforms"]["livekit"]
+        assert any(
+            entry["id"] == "room-123"
+            and entry["name"] == "Sprint Room"
+            and entry["type"] == "room"
+            and entry["control_platform"] == "discord"
+            and entry["control_chat_id"] == "guild-456"
+            and entry["control_thread_id"] == "thread-789"
+            for entry in livekit_entries
+        )
+
+
 class TestFormatDirectoryForDisplay:
     def test_empty_directory(self, tmp_path):
         with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
@@ -250,3 +281,22 @@ class TestFormatDirectoryForDisplay:
         assert "Discord (Server1):" in result
         assert "Discord (Server2):" in result
         assert "discord:#general" in result
+
+    def test_livekit_display_shows_linked_control_context(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "livekit": [
+                {
+                    "id": "room-123",
+                    "name": "Sprint Room",
+                    "type": "room",
+                    "control_platform": "discord",
+                    "control_chat_id": "guild-456",
+                    "control_thread_id": "thread-789",
+                }
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            result = format_directory_for_display()
+
+        assert "LiveKit:" in result
+        assert "livekit:Sprint Room (room) [linked to discord:guild-456:thread-789]" in result

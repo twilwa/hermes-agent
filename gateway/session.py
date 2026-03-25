@@ -89,7 +89,7 @@ class SessionSource:
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
-    chat_id_alt: Optional[str] = None  # Signal group internal ID
+    chat_id_alt: Optional[str] = None  # Alternate stable chat identity
     
     @property
     def description(self) -> str:

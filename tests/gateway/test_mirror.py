@@ -57,6 +57,25 @@ class TestFindSessionId:
 
         assert result == "sess_new"
 
+    def test_linked_chat_id_matches_alternate_identity(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "linked": {
+                "session_id": "sess_livekit",
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "guild-123",
+                    "chat_id_alt": "room-abc",
+                },
+                "updated_at": "2026-03-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("discord", "room-abc", linked_chat_id="room-abc")
+
+        assert result == "sess_livekit"
+
     def test_thread_id_disambiguates_same_chat(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "topic_a": {

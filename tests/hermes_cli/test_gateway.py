@@ -4,6 +4,8 @@ import signal
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
+import pytest
+
 import hermes_cli.gateway as gateway
 
 
@@ -171,6 +173,56 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 
     assert (scope, did_install) == ("system", True)
     assert calls == [(True, True, "alice")]
+
+
+@pytest.mark.parametrize(
+    ("env_values", "expected"),
+    [
+        ({}, "not configured"),
+        ({"LIVEKIT_URL": "wss://livekit.example"}, "partially configured"),
+        (
+            {
+                "LIVEKIT_URL": "wss://livekit.example",
+                "LIVEKIT_API_KEY": "lk-key",
+                "LIVEKIT_API_SECRET": "lk-secret",
+            },
+            "configured",
+        ),
+    ],
+)
+def test_livekit_platform_status(monkeypatch, env_values, expected):
+    for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env_values.items():
+        monkeypatch.setenv(name, value)
+
+    livekit_platform = next(platform for platform in gateway._PLATFORMS if platform["key"] == "livekit")
+
+    assert gateway._platform_status(livekit_platform) == expected
+
+
+def test_gateway_setup_menu_includes_livekit(monkeypatch, capsys):
+    menu_calls = []
+
+    monkeypatch.setattr(gateway, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gateway, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gateway, "is_linux", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+
+    def fake_prompt_choice(prompt, menu_items, default):
+        menu_calls.append((prompt, list(menu_items), default))
+        return len(menu_items) - 1
+
+    monkeypatch.setattr(gateway, "prompt_choice", fake_prompt_choice)
+
+    gateway.gateway_setup()
+
+    capsys.readouterr()
+    assert menu_calls
+    _, menu_items, _ = menu_calls[0]
+    assert any(item.startswith("LiveKit  (") for item in menu_items)
 
 
 # ---------------------------------------------------------------------------
