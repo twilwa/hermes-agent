@@ -90,12 +90,14 @@ def test_normalize_github_token_env_aliases_nonstandard_secret_keys(monkeypatch)
 def test_named_secret_names_include_github_and_prime_by_default(monkeypatch):
     monkeypatch.delenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", raising=False)
     monkeypatch.delenv("HERMES_MODAL_PRIME_API_KEY_SECRET", raising=False)
+    monkeypatch.delenv("HERMES_MODAL_FIRECRAWL_API_KEY_SECRET", raising=False)
 
-    assert _named_secret_names() == ["github-token", "PRIME_API_KEY"]
+    assert _named_secret_names() == ["github-token", "PRIME_API_KEY", "FIRECRAWL_API_KEY"]
 
 
 def test_named_secret_names_dedupe_and_skip_empty_values(monkeypatch):
     monkeypatch.setenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "shared-secret")
     monkeypatch.setenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "shared-secret")
+    monkeypatch.setenv("HERMES_MODAL_FIRECRAWL_API_KEY_SECRET", "shared-secret")
 
     assert _named_secret_names() == ["shared-secret"]
