@@ -9,6 +9,7 @@ Uses discord.py library for:
 - Handling threads and channels
 """
 
+import importlib
 import asyncio
 import json
 import logging
@@ -40,6 +41,7 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
+from urllib.parse import urlparse
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
@@ -1407,6 +1409,112 @@ class DiscordAdapter(BasePlatformAdapter):
         # Discord markdown is fairly standard, no special escaping needed
         return content
 
+    def _get_room_links_module(self):
+        try:
+            return importlib.import_module("gateway.room_links")
+        except Exception as exc:
+            logger.debug("[%s] LiveKit linkage store unavailable: %s", self.name, exc)
+            return None
+
+    @staticmethod
+    def _normalize_livekit_room_reference(room: str) -> tuple[str, str]:
+        room = room.strip()
+        if not room:
+            return "", ""
+
+        room_id = room
+        if "://" in room:
+            parsed = urlparse(room)
+            path = parsed.path.rstrip("/")
+            if path:
+                room_id = path.rsplit("/", 1)[-1] or room_id
+            elif parsed.netloc:
+                room_id = parsed.netloc
+
+        return room_id, room_id
+
+    def _livekit_control_identity(self, interaction: discord.Interaction) -> tuple[str, Optional[str]]:
+        control_chat_id = str(interaction.channel_id)
+        control_thread_id: Optional[str] = None
+
+        if isinstance(interaction.channel, discord.Thread):
+            control_thread_id = str(interaction.channel_id)
+            parent = getattr(interaction.channel, "parent", None)
+            parent_id = getattr(parent, "id", None)
+            if parent_id is not None:
+                control_chat_id = str(parent_id)
+
+        return control_chat_id, control_thread_id
+
+    @staticmethod
+    def _room_link_value(link: Any, field: str, default: Any = None) -> Any:
+        if link is None:
+            return default
+        if isinstance(link, dict):
+            return link.get(field, default)
+        getter = getattr(link, "get", None)
+        if callable(getter):
+            try:
+                return getter(field, default)
+            except TypeError:
+                pass
+        return getattr(link, field, default)
+
+    @staticmethod
+    def _livekit_context_label(chat_type: str) -> str:
+        if chat_type == "thread":
+            return "this Discord thread"
+        if chat_type == "dm":
+            return "this Discord DM"
+        return "this Discord channel"
+
+    def _build_livekit_followup(
+        self,
+        action: str,
+        link: Any,
+        context_label: str,
+        fallback_room_name: str,
+        fallback_room_id: str,
+    ) -> str:
+        room_name = self._room_link_value(link, "room_name", fallback_room_name) or fallback_room_id
+        room_id = self._room_link_value(link, "room_id", fallback_room_id) or room_name
+
+        if action == "create":
+            if link:
+                return (
+                    f'LiveKit room "{room_name}" saved in {context_label}. '
+                    "Join info will be posted here. Discord stays control-only, with no Discord audio bridge."
+                )
+            return (
+                "LiveKit create request sent. Hermes will post join info here; "
+                "Discord stays control-only, with no Discord audio bridge."
+            )
+
+        if action == "link":
+            if link:
+                return (
+                    f'LiveKit room "{room_name}" linked in {context_label}. '
+                    "Join info will be posted here. Discord stays control-only, with no Discord audio bridge."
+                )
+            return (
+                "LiveKit link request sent. Hermes will post linkage and join info here; "
+                "Discord stays control-only, with no Discord audio bridge."
+            )
+
+        if action == "status":
+            if link:
+                return (
+                    f'LiveKit room "{room_name}" is linked in {context_label} (room id: {room_id}). '
+                    "Hermes will report room status and join info here. "
+                    "Discord stays control-only, with no Discord audio bridge."
+                )
+            return (
+                f"No LiveKit room is linked to {context_label} yet. "
+                "Discord stays control-only, with no Discord audio bridge."
+            )
+
+        return "LiveKit control request sent. Discord stays control-only, with no Discord audio bridge."
+
     async def _run_simple_slash(
         self,
         interaction: discord.Interaction,
@@ -1431,24 +1539,49 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         """Dispatch a LiveKit control command through the standard Discord flow."""
         command_text = f"/livekit {action} {room}".strip()
-        followup_msg = {
-            "create": (
-                "LiveKit create request sent. Hermes will post join info here; "
-                "Discord stays control-only, with no Discord audio bridge."
-            ),
-            "link": (
-                "LiveKit link request sent. Hermes will post linkage and join info here; "
-                "Discord stays control-only, with no Discord audio bridge."
-            ),
-            "status": (
-                "LiveKit status requested. Hermes will report room status and join info here; "
-                "Discord stays control-only, with no Discord audio bridge."
-            ),
-        }.get(
+        await interaction.response.defer(ephemeral=True)
+
+        event = self._build_slash_event(interaction, command_text)
+        room_links = self._get_room_links_module()
+        room_id, room_name = self._normalize_livekit_room_reference(room)
+        control_chat_id, control_thread_id = self._livekit_control_identity(interaction)
+        context_label = self._livekit_context_label(event.source.chat_type)
+        persisted_link = None
+
+        if room_links:
+            try:
+                if action in {"create", "link"} and room_id:
+                    room_links.save_room_link(
+                        "livekit",
+                        room_id,
+                        room_name,
+                        "discord",
+                        control_chat_id,
+                        control_thread_id,
+                    )
+                    persisted_link = room_links.get_room_link("livekit", room_id)
+                elif action == "status":
+                    persisted_link = room_links.find_room_link("discord", control_chat_id, control_thread_id)
+                    if not persisted_link and room_id:
+                        persisted_link = room_links.get_room_link("livekit", room_id)
+            except Exception as exc:
+                logger.debug("[%s] LiveKit linkage update failed: %s", self.name, exc)
+
+        followup_msg = self._build_livekit_followup(
             action,
-            "LiveKit control request sent. Discord stays control-only, with no Discord audio bridge.",
+            persisted_link,
+            context_label,
+            room_name,
+            room_id,
         )
-        await self._run_simple_slash(interaction, command_text, followup_msg)
+
+        await self.handle_message(event)
+
+        if followup_msg:
+            try:
+                await interaction.followup.send(followup_msg, ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
