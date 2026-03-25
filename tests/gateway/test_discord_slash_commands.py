@@ -67,16 +67,11 @@ def adapter():
 
 
 @pytest.fixture
-def room_links_module():
-    module = SimpleNamespace(
-        save_room_link=MagicMock(),
-        get_room_link=MagicMock(),
-        find_room_link=MagicMock(),
-        list_room_links=MagicMock(),
-    )
-    sys.modules["gateway.room_links"] = module
-    yield module
-    sys.modules.pop("gateway.room_links", None)
+def room_links_module(tmp_path, monkeypatch):
+    import gateway.room_links as room_links
+
+    monkeypatch.setattr(room_links, "ROOM_LINKS_PATH", tmp_path / "room_links.json")
+    return room_links
 
 
 # ------------------------------------------------------------------
@@ -102,7 +97,7 @@ async def test_registers_native_thread_slash_command(adapter):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("action", "room", "expected_text", "expected_followup", "saved_room_id", "saved_room_name"),
+    ("action", "room", "expected_text", "expected_followup", "room_id", "room_name"),
     [
         (
             "create",
@@ -120,17 +115,9 @@ async def test_registers_native_thread_slash_command(adapter):
             "abc123",
             "abc123",
         ),
-        (
-            "status",
-            "",
-            "/livekit status",
-            "LiveKit room \"Studio A\" is linked in this Discord channel (room id: abc123). Hermes will report room status and join info here. Discord stays control-only, with no Discord audio bridge.",
-            "abc123",
-            "Studio A",
-        ),
     ],
 )
-async def test_registers_livekit_control_command(adapter, room_links_module, action, room, expected_text, expected_followup, saved_room_id, saved_room_name):
+async def test_registers_livekit_control_command(adapter, room_links_module, action, room, expected_text, expected_followup, room_id, room_name):
     adapter._register_slash_commands()
 
     command = adapter._client.tree.commands["livekit"]
@@ -149,25 +136,6 @@ async def test_registers_livekit_control_command(adapter, room_links_module, act
 
     adapter.handle_message = capture_handle
 
-    if action in {"create", "link"}:
-        room_links_module.get_room_link.return_value = {
-            "platform": "livekit",
-            "room_id": saved_room_id,
-            "room_name": saved_room_name,
-            "control_platform": "discord",
-            "control_chat_id": "123",
-            "control_thread_id": None,
-        }
-    else:
-        room_links_module.find_room_link.return_value = {
-            "platform": "livekit",
-            "room_id": saved_room_id,
-            "room_name": saved_room_name,
-            "control_platform": "discord",
-            "control_chat_id": "123",
-            "control_thread_id": None,
-        }
-
     await command(interaction, action=action, room=room)
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
@@ -180,37 +148,58 @@ async def test_registers_livekit_control_command(adapter, room_links_module, act
     assert event.source.chat_id == "123"
     assert event.source.chat_name == "TestGuild / #general"
 
-    if action == "create":
-        room_links_module.save_room_link.assert_called_once_with(
-            "livekit",
-            "Studio A",
-            "Studio A",
-            "discord",
-            "123",
-            None,
-        )
-        room_links_module.get_room_link.assert_called_once_with("livekit", "Studio A")
-        room_links_module.find_room_link.assert_not_called()
-    elif action == "link":
-        room_links_module.save_room_link.assert_called_once_with(
-            "livekit",
-            "abc123",
-            "abc123",
-            "discord",
-            "123",
-            None,
-        )
-        room_links_module.get_room_link.assert_called_once_with("livekit", "abc123")
-        room_links_module.find_room_link.assert_not_called()
-    else:
-        room_links_module.find_room_link.assert_called_once_with("discord", "123", None)
-        room_links_module.save_room_link.assert_not_called()
-        room_links_module.get_room_link.assert_not_called()
+    persisted = room_links_module.get_room_link("livekit", room_id)
+    assert persisted is not None
+    assert persisted["room_id"] == room_id
+    assert persisted["room_name"] == room_name
+    assert persisted["control_platform"] == "discord"
+    assert persisted["control_chat_id"] == "123"
+    assert persisted["control_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_livekit_status_reports_persisted_link_for_channel(adapter, room_links_module):
+    adapter._register_slash_commands()
+
+    room_links_module.save_room_link("livekit", "abc123", "Studio A", "discord", "123")
+
+    command = adapter._client.tree.commands["livekit"]
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    await command(interaction, action="status", room="")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.followup.send.assert_awaited_once_with(
+        'LiveKit room "Studio A" is linked in this Discord channel (room id: abc123). Hermes will report room status and join info here. Discord stays control-only, with no Discord audio bridge.',
+        ephemeral=True,
+    )
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    assert event.text == "/livekit status"
+    assert event.message_type == MessageType.COMMAND
+    assert event.source.chat_type == "group"
+    assert event.source.chat_id == "123"
+    assert room_links_module.find_room_link("discord", "123", None)["room_id"] == "abc123"
 
 
 @pytest.mark.asyncio
 async def test_livekit_status_uses_thread_control_identity(adapter, room_links_module):
     adapter._register_slash_commands()
+
+    room_links_module.save_room_link("livekit", "abc123", "Planning Room", "discord", "456", "789")
 
     command = adapter._client.tree.commands["livekit"]
     thread_channel = sys.modules["discord"].Thread()
@@ -232,14 +221,6 @@ async def test_livekit_status_uses_thread_control_identity(adapter, room_links_m
         captured_events.append(event)
 
     adapter.handle_message = capture_handle
-    room_links_module.find_room_link.return_value = {
-        "platform": "livekit",
-        "room_id": "abc123",
-        "room_name": "Planning Room",
-        "control_platform": "discord",
-        "control_chat_id": "456",
-        "control_thread_id": "789",
-    }
 
     await command(interaction, action="status", room="")
 
@@ -255,9 +236,10 @@ async def test_livekit_status_uses_thread_control_identity(adapter, room_links_m
     assert event.source.chat_type == "thread"
     assert event.source.chat_id == "789"
     assert event.source.thread_id == "789"
-    room_links_module.find_room_link.assert_called_once_with("discord", "456", "789")
-    room_links_module.save_room_link.assert_not_called()
-    room_links_module.get_room_link.assert_not_called()
+    persisted = room_links_module.find_room_link("discord", "456", "789")
+    assert persisted is not None
+    assert persisted["room_id"] == "abc123"
+    assert persisted["room_name"] == "Planning Room"
 
 
 # ------------------------------------------------------------------
