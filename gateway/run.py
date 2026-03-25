@@ -225,7 +225,6 @@ from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
-_LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", None)
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -1428,7 +1427,7 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
-        elif _LIVEKIT_PLATFORM is not None and platform == _LIVEKIT_PLATFORM:
+        elif platform == Platform.LIVEKIT:
             try:
                 from gateway.platforms.livekit import LiveKitAdapter, check_livekit_requirements
             except ImportError:
@@ -1493,6 +1492,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.LIVEKIT: "LIVEKIT_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1505,10 +1505,8 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.LIVEKIT: "LIVEKIT_ALLOW_ALL_USERS",
         }
-        if _LIVEKIT_PLATFORM is not None:
-            platform_env_map[_LIVEKIT_PLATFORM] = "LIVEKIT_ALLOWED_USERS"
-            platform_allow_all_map[_LIVEKIT_PLATFORM] = "LIVEKIT_ALLOW_ALL_USERS"
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
@@ -3736,9 +3734,8 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
+                Platform.LIVEKIT: "hermes-livekit",
             }
-            if _LIVEKIT_PLATFORM is not None:
-                default_toolset_map[_LIVEKIT_PLATFORM] = "hermes-livekit"
             platform_toolsets_config = {}
             try:
                 config_path = _hermes_home / 'config.yaml'
@@ -3760,9 +3757,8 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
                 Platform.DINGTALK: "dingtalk",
+                Platform.LIVEKIT: "livekit",
             }
-            if _LIVEKIT_PLATFORM is not None:
-                platform_config_key[_LIVEKIT_PLATFORM] = "livekit"
             platform_config_key = platform_config_key.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -4975,9 +4971,8 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
+            Platform.LIVEKIT: "hermes-livekit",
         }
-        if _LIVEKIT_PLATFORM is not None:
-            default_toolset_map[_LIVEKIT_PLATFORM] = "hermes-livekit"
 
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
@@ -5002,9 +4997,8 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",
+            Platform.LIVEKIT: "livekit",
         }
-        if _LIVEKIT_PLATFORM is not None:
-            platform_config_key[_LIVEKIT_PLATFORM] = "livekit"
         platform_config_key = platform_config_key.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

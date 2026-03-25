@@ -16,7 +16,6 @@ import time
 from gateway.config import Platform
 
 logger = logging.getLogger(__name__)
-_LIVEKIT_PLATFORM = getattr(Platform, "LIVEKIT", None)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -135,9 +134,8 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "livekit": Platform.LIVEKIT,
     }
-    if _LIVEKIT_PLATFORM is not None:
-        platform_map["livekit"] = _LIVEKIT_PLATFORM
     platform = platform_map.get(platform_name)
     if not platform:
         avail = ", ".join(platform_map.keys())
@@ -342,7 +340,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_discord(pconfig.token, chat_id, chunk)
         elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
-        elif _LIVEKIT_PLATFORM is not None and platform == _LIVEKIT_PLATFORM:
+        elif platform == Platform.LIVEKIT:
             result = await _send_livekit(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
