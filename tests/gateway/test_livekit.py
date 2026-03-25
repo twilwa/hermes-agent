@@ -3,7 +3,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -86,6 +86,72 @@ async def test_connect_registers_room_handlers(monkeypatch):
     await adapter.disconnect()
     room.disconnect.assert_awaited_once()
     assert adapter.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_connect_mirrors_linked_room_status_into_control_session(monkeypatch):
+    room = FakeRoom()
+    adapter = make_adapter()
+    mirror = MagicMock(return_value=True)
+
+    monkeypatch.setattr("gateway.platforms.livekit.LIVEKIT_AVAILABLE", True)
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.rtc",
+        SimpleNamespace(Room=lambda: room),
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.get_room_link",
+        lambda platform, room_id: {
+            "room_id": "team-room",
+            "room_name": "Team Room",
+            "control_platform": "discord",
+            "control_chat_id": "discord-control",
+            "control_thread_id": "thread-7",
+        } if room_id == "team-room" else None,
+    )
+    monkeypatch.setattr("gateway.platforms.livekit.mirror_to_session", mirror)
+
+    connected = await adapter.connect()
+
+    assert connected is True
+    mirror.assert_called_once_with(
+        "discord",
+        "discord-control",
+        "[LiveKit status] Room connected: team-room",
+        source_label="livekit",
+        thread_id="thread-7",
+        linked_chat_id="team-room",
+    )
+
+
+def test_room_disconnect_mirrors_linked_status_into_control_session(monkeypatch):
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter._manual_disconnect = True
+    mirror = MagicMock(return_value=True)
+
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.get_room_link",
+        lambda platform, room_id: {
+            "room_id": "team-room",
+            "control_platform": "discord",
+            "control_chat_id": "discord-control",
+            "control_thread_id": "thread-7",
+        } if room_id == "team-room" else None,
+    )
+    monkeypatch.setattr("gateway.platforms.livekit.mirror_to_session", mirror)
+
+    adapter._on_room_disconnected("transport_restart")
+
+    mirror.assert_called_once_with(
+        "discord",
+        "discord-control",
+        "[LiveKit status] Room disconnected: team-room (transport_restart)",
+        source_label="livekit",
+        thread_id="thread-7",
+        linked_chat_id="team-room",
+    )
 
 
 @pytest.mark.asyncio
@@ -245,6 +311,59 @@ async def test_transcriptions_become_synthetic_text_message_events():
     assert event.source.user_id == "user-1"
     assert event.source.user_id_alt == "user-1"
     assert event.source.chat_topic == "transcription"
+
+
+@pytest.mark.asyncio
+async def test_transcriptions_mirror_into_linked_control_session(monkeypatch):
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter.handle_message = AsyncMock()
+    mirror = MagicMock(return_value=True)
+
+    monkeypatch.setattr(
+        "gateway.platforms.livekit.get_room_link",
+        lambda platform, room_id: {
+            "room_id": "team-room",
+            "control_platform": "discord",
+            "control_chat_id": "discord-control",
+            "control_thread_id": "thread-9",
+        } if room_id == "team-room" else None,
+    )
+    monkeypatch.setattr("gateway.platforms.livekit.mirror_to_session", mirror)
+
+    await adapter._consume_transcription(
+        [SimpleNamespace(text="linked"), SimpleNamespace(text="transcript")],
+        room.remote_participants["user-1"],
+    )
+
+    mirror.assert_called_once_with(
+        "discord",
+        "discord-control",
+        "[LiveKit transcript] Ada: linked transcript",
+        source_label="livekit",
+        thread_id="thread-9",
+        linked_chat_id="team-room",
+    )
+
+
+@pytest.mark.asyncio
+async def test_unlinked_transcriptions_do_not_mirror(monkeypatch):
+    room = FakeRoom()
+    adapter = make_adapter()
+    adapter._room = room
+    adapter.handle_message = AsyncMock()
+    mirror = MagicMock(return_value=True)
+
+    monkeypatch.setattr("gateway.platforms.livekit.get_room_link", lambda platform, room_id: None)
+    monkeypatch.setattr("gateway.platforms.livekit.mirror_to_session", mirror)
+
+    await adapter._consume_transcription(
+        [SimpleNamespace(text="room-local-only")],
+        room.remote_participants["user-1"],
+    )
+
+    mirror.assert_not_called()
 
 
 @pytest.mark.asyncio

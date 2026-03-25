@@ -13,6 +13,14 @@ from typing import Any, Dict, Iterable, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.mirror import mirror_to_session
+
+try:
+    from gateway.room_links import get_room_link
+except ImportError:
+    def get_room_link(platform: Any, room_id: str) -> Any:
+        del platform, room_id
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +119,7 @@ class LiveKitAdapter(BasePlatformAdapter):
                 self._resolved_room_name(),
                 self._url,
             )
+            self._mirror_linked_status("connected")
             return True
         except Exception as exc:
             self._room = None
@@ -269,6 +278,7 @@ class LiveKitAdapter(BasePlatformAdapter):
     def _on_room_disconnected(self, reason: Any) -> None:
         logger.info("[LiveKit] room disconnected reason=%s", reason)
         self._mark_disconnected()
+        self._mirror_linked_status("disconnected", detail=reason)
         if self._manual_disconnect:
             return
         if self._reconnect_task is not None and not self._reconnect_task.done():
@@ -342,6 +352,10 @@ class LiveKitAdapter(BasePlatformAdapter):
             chat_topic=topic,
             reply_to_message_id=str(reply_to) if reply_to else None,
         )
+        if isinstance(payload, dict):
+            raw_type = str(payload.get("message_type", "") or "").lower()
+            if raw_type == MessageType.VOICE.value:
+                self._mirror_linked_transcript(text, participant)
         await self.handle_message(event)
 
     async def _consume_transcription(self, segments: Iterable[Any], participant: Any) -> None:
@@ -362,6 +376,7 @@ class LiveKitAdapter(BasePlatformAdapter):
             message_id=None,
             chat_topic="transcription",
         )
+        self._mirror_linked_transcript(text, participant)
         await self.handle_message(event)
 
     def _build_message_event(
@@ -399,6 +414,52 @@ class LiveKitAdapter(BasePlatformAdapter):
         task = asyncio.create_task(coro)
         self._room_tasks.add(task)
         task.add_done_callback(self._room_tasks.discard)
+
+    def _mirror_linked_status(self, status: str, detail: Any = None) -> bool:
+        room_name = self._resolved_room_name()
+        message = f"[LiveKit status] Room {status}: {room_name}"
+        if detail not in (None, ""):
+            message = f"{message} ({detail})"
+        return self._mirror_linked_event(message)
+
+    def _mirror_linked_transcript(self, text: str, participant: Any) -> bool:
+        speaker = self._participant_name(participant) or self._participant_identity(participant) or "participant"
+        return self._mirror_linked_event(f"[LiveKit transcript] {speaker}: {text}")
+
+    def _mirror_linked_event(self, message: str) -> bool:
+        link = self._linked_control_context()
+        if link is None:
+            return False
+        return mirror_to_session(
+            link["control_platform"],
+            link["control_chat_id"],
+            message,
+            source_label="livekit",
+            thread_id=link["control_thread_id"],
+            linked_chat_id=link["linked_room_id"],
+        )
+
+    def _linked_control_context(self) -> Optional[Dict[str, str]]:
+        for platform_key in self._platform_link_keys():
+            for room_id in self._linked_room_ids():
+                link = get_room_link(platform_key, room_id)
+                if link is None:
+                    continue
+                control_platform = self._normalized_link_platform(
+                    self._link_value(link, "control_platform"),
+                )
+                control_chat_id = self._link_value(link, "control_chat_id")
+                if not control_platform or not control_chat_id:
+                    return None
+                control_thread_id = self._link_value(link, "control_thread_id")
+                linked_room_id = self._link_value(link, "room_id") or room_id
+                return {
+                    "control_platform": control_platform,
+                    "control_chat_id": str(control_chat_id),
+                    "control_thread_id": str(control_thread_id) if control_thread_id else None,
+                    "linked_room_id": str(linked_room_id),
+                }
+        return None
 
     async def _cancel_reconnect_task(self) -> None:
         reconnect_task = self._reconnect_task
@@ -511,6 +572,20 @@ class LiveKitAdapter(BasePlatformAdapter):
     def _is_local_participant(self, participant: Any) -> bool:
         return self._is_local_identity(self._participant_identity(participant))
 
+    def _linked_room_ids(self) -> tuple[str, ...]:
+        room_ids = []
+        for room_id in (self._resolved_room_name(), self._resolved_room_sid()):
+            if room_id and room_id not in room_ids:
+                room_ids.append(room_id)
+        return tuple(room_ids)
+
+    def _platform_link_keys(self) -> tuple[Any, ...]:
+        platform_keys = [self.platform]
+        platform_value = getattr(self.platform, "value", None)
+        if platform_value is not None and platform_value not in platform_keys:
+            platform_keys.append(platform_value)
+        return tuple(platform_keys)
+
     def _resolve_destination_identities(
         self,
         chat_id: str,
@@ -577,6 +652,21 @@ class LiveKitAdapter(BasePlatformAdapter):
             return None
         name = getattr(participant, "name", None) or getattr(participant, "identity", None)
         return str(name) if name else None
+
+    @staticmethod
+    def _link_value(link: Any, key: str) -> Any:
+        if isinstance(link, dict):
+            return link.get(key)
+        return getattr(link, key, None)
+
+    @staticmethod
+    def _normalized_link_platform(platform: Any) -> Optional[str]:
+        if platform is None:
+            return None
+        if hasattr(platform, "value"):
+            platform = platform.value
+        normalized = str(platform).strip().lower()
+        return normalized or None
 
     @staticmethod
     def _stream_info_id(info: Any) -> Optional[str]:
