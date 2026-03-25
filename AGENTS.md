@@ -8,6 +8,20 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
+## Issue Tracking
+
+Use `br` (`beads_rust`) for issue tracking in this repo. Do not use `bd`.
+
+`br` is non-invasive and never runs git commands. If issue state needs to be
+flushed, run:
+
+```bash
+br sync --flush-only
+```
+
+Do not run git staging, commit, or sync commands as part of issue tracking
+here. The human handles git.
+
 ## Project Structure
 
 ```
