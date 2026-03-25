@@ -91,9 +91,24 @@ async def test_registers_native_thread_slash_command(adapter):
 @pytest.mark.parametrize(
     ("action", "room", "expected_text", "expected_followup"),
     [
-        ("create", "Studio A", "/livekit create Studio A", "LiveKit room create request sent~"),
-        ("link", "https://livekit.example/room/abc123", "/livekit link https://livekit.example/room/abc123", "LiveKit room link request sent~"),
-        ("status", "", "/livekit status", "LiveKit status requested~"),
+        (
+            "create",
+            "Studio A",
+            "/livekit create Studio A",
+            "LiveKit create request sent. Hermes will post join info here; Discord stays control-only, with no Discord audio bridge.",
+        ),
+        (
+            "link",
+            "https://livekit.example/room/abc123",
+            "/livekit link https://livekit.example/room/abc123",
+            "LiveKit link request sent. Hermes will post linkage and join info here; Discord stays control-only, with no Discord audio bridge.",
+        ),
+        (
+            "status",
+            "",
+            "/livekit status",
+            "LiveKit status requested. Hermes will report room status and join info here; Discord stays control-only, with no Discord audio bridge.",
+        ),
     ],
 )
 async def test_registers_livekit_control_command(adapter, action, room, expected_text, expected_followup):
@@ -510,4 +525,3 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
     await adapter._handle_message(msg)
 
     adapter._auto_create_thread.assert_not_awaited()  # should NOT auto-thread
-

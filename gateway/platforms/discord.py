@@ -1432,10 +1432,22 @@ class DiscordAdapter(BasePlatformAdapter):
         """Dispatch a LiveKit control command through the standard Discord flow."""
         command_text = f"/livekit {action} {room}".strip()
         followup_msg = {
-            "create": "LiveKit room create request sent~",
-            "link": "LiveKit room link request sent~",
-            "status": "LiveKit status requested~",
-        }.get(action, "LiveKit control request sent~")
+            "create": (
+                "LiveKit create request sent. Hermes will post join info here; "
+                "Discord stays control-only, with no Discord audio bridge."
+            ),
+            "link": (
+                "LiveKit link request sent. Hermes will post linkage and join info here; "
+                "Discord stays control-only, with no Discord audio bridge."
+            ),
+            "status": (
+                "LiveKit status requested. Hermes will report room status and join info here; "
+                "Discord stays control-only, with no Discord audio bridge."
+            ),
+        }.get(
+            action,
+            "LiveKit control request sent. Discord stays control-only, with no Discord audio bridge.",
+        )
         await self._run_simple_slash(interaction, command_text, followup_msg)
 
     def _register_slash_commands(self) -> None:
@@ -1482,10 +1494,13 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
 
-        @tree.command(name="livekit", description="Create, link, or inspect a LiveKit room")
+        @tree.command(
+            name="livekit",
+            description="Create, link, or inspect a LiveKit room without bridging Discord audio",
+        )
         @discord.app_commands.describe(
-            action="What to do: create, link, or status.",
-            room="Room name or room link. Required for create/link.",
+            action="What to do: create, link, or status. Discord stays control-only.",
+            room="Room name or room link. Required for create/link. Join info will be reported back here.",
         )
         @discord.app_commands.choices(
             action=[
