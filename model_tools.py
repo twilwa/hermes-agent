@@ -147,6 +147,7 @@ def _discover_tools():
         "tools.browser_tool",
         "tools.cronjob_tools",
         "tools.rl_training_tool",
+        "tools.hyperspace_sidecar_tool",
         "tools.tts_tool",
         "tools.todo_tool",
         "tools.memory_tool",
@@ -203,7 +204,7 @@ _last_resolved_tool_names: List[str] = []
 
 _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search", "web_extract"],
-    "terminal_tools": ["terminal"],
+    "terminal_tools": ["terminal", "hyperspace_sidecar", "hyperspace"],
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
@@ -220,7 +221,8 @@ _LEGACY_TOOLSET_MAP = {
         "rl_get_current_config", "rl_edit_config",
         "rl_start_training", "rl_check_status",
         "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
+        "rl_list_runs", "rl_test_inference",
+        "hyperspace_sidecar", "hyperspace",
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
