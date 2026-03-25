@@ -159,6 +159,16 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
+| `LIVEKIT_URL` | LiveKit server URL or LiveKit Cloud project URL |
+| `LIVEKIT_API_KEY` | LiveKit API key used by the Hermes agent |
+| `LIVEKIT_API_SECRET` | LiveKit API secret used by the Hermes agent |
+| `LIVEKIT_TOKEN` | Optional LiveKit session token override for advanced deployments |
+| `LIVEKIT_ROOM` | Default LiveKit room used for home delivery |
+| `LIVEKIT_HOME_ROOM` | Alias for `LIVEKIT_ROOM` |
+| `LIVEKIT_ROOM_NAME` | Display name for the default LiveKit room |
+| `LIVEKIT_HOME_ROOM_NAME` | Alias for `LIVEKIT_ROOM_NAME` |
+| `LIVEKIT_ALLOWED_USERS` | Comma-separated user IDs allowed to use the LiveKit gateway |
+| `LIVEKIT_ALLOW_ALL_USERS` | Allow all users without an allowlist (`true`/`false`, default: `false`) |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
@@ -221,6 +231,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
+
+:::note Phase-one scope
+LiveKit in phase one is LiveKit-native media with Discord as a separate
+control surface. The standard `DISCORD_*` variables documented above still
+cover Discord control. The LiveKit-specific room, token, and allowlist
+variables are documented in this table, and no additional LiveKit-specific
+Discord environment variables are introduced here.
+:::
 
 ## Agent Behavior
 

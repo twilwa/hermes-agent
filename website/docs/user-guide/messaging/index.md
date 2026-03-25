@@ -1,12 +1,14 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, LiveKit, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, LiveKit, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, or your browser. LiveKit is the native media plane in phase one; Discord is only the control surface for room management and status. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+
+For the phase-one LiveKit operator guide, see [LiveKit Setup](livekit.md).
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -18,6 +20,7 @@ flowchart TB
         subgraph Adapters["Platform adapters"]
             tg[Telegram]
             dc[Discord]
+            lk[LiveKit]
             wa[WhatsApp]
             sl[Slack]
             sig[Signal]
@@ -38,6 +41,7 @@ flowchart TB
 
     tg --> store
     dc --> store
+    lk --> store
     wa --> store
     sl --> store
     sig --> store
@@ -304,6 +308,7 @@ Each platform has its own toolset:
 | CLI | `hermes-cli` | Full access |
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
+| LiveKit | `hermes-livekit` | LiveKit-native media; Discord control only |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -320,6 +325,7 @@ Each platform has its own toolset:
 
 - [Telegram Setup](telegram.md)
 - [Discord Setup](discord.md)
+- [LiveKit Setup](livekit.md)
 - [Slack Setup](slack.md)
 - [WhatsApp Setup](whatsapp.md)
 - [Signal Setup](signal.md)
