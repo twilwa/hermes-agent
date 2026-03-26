@@ -1029,6 +1029,22 @@ class TestDiscordVoiceChannelMethods:
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
 
     @pytest.mark.asyncio
+    async def test_process_voice_input_uses_provider_aware_stt_defaults(self):
+        """Voice channel input should let transcribe_audio pick the provider-specific model."""
+        adapter = self._make_adapter()
+        adapter._voice_input_callback = AsyncMock()
+        adapter._allowed_user_ids = set()
+
+        with patch("gateway.platforms.discord.VoiceReceiver.pcm_to_wav"), \
+             patch("tools.transcription_tools.transcribe_audio",
+                   return_value={"success": True, "transcript": "Hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
+            await adapter._process_voice_input(111, 42, b"\x00" * 96000)
+
+        assert mock_transcribe.call_args.args == (mock_transcribe.call_args.args[0],)
+        assert mock_transcribe.call_args.kwargs == {}
+
+    @pytest.mark.asyncio
     async def test_process_voice_input_hallucination_filtered(self):
         """Whisper hallucination is filtered out."""
         adapter = self._make_adapter()
