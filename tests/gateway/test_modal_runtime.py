@@ -1,4 +1,8 @@
 import os
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from gateway.modal_runtime import (
     normalize_github_token_env,
@@ -6,6 +10,7 @@ from gateway.modal_runtime import (
     sanitize_config_for_modal,
     sanitize_env_text_for_modal,
 )
+import gateway.run as run_module
 from scripts.modal_gateway import _named_secret_names
 
 
@@ -101,3 +106,49 @@ def test_named_secret_names_dedupe_and_skip_empty_values(monkeypatch):
     monkeypatch.setenv("HERMES_MODAL_FIRECRAWL_API_KEY_SECRET", "shared-secret")
 
     assert _named_secret_names() == ["shared-secret"]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_skips_signal_handlers_outside_main_thread(monkeypatch, tmp_path):
+    class _FakeRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+
+        async def start(self):
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    loop = MagicMock()
+
+    monkeypatch.setattr(run_module, "_hermes_home", tmp_path)
+    monkeypatch.setattr(run_module, "GatewayRunner", _FakeRunner)
+    monkeypatch.setattr(run_module.asyncio, "get_event_loop", lambda: loop)
+    monkeypatch.setattr(
+        run_module.threading,
+        "current_thread",
+        lambda: SimpleNamespace(name="worker-thread"),
+    )
+    monkeypatch.setattr(
+        run_module.threading,
+        "main_thread",
+        lambda: SimpleNamespace(name="main-thread"),
+    )
+    monkeypatch.setattr(run_module, "_start_cron_ticker", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+
+    ok = await run_module.start_gateway(replace=True)
+
+    assert ok is True
+    loop.add_signal_handler.assert_not_called()
