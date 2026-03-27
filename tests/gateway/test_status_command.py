@@ -1,11 +1,13 @@
-"""Tests for gateway /status behavior and token persistence."""
+"""Tests for gateway /status behavior, terminal resets, and token persistence."""
 
 from datetime import datetime
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -89,9 +91,33 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_handle_message_persists_agent_token_counts(monkeypatch):
-    import gateway.run as gateway_run
+async def test_reset_terminal_sandbox_command_targets_gateway_session(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    reset_calls = []
+    terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
+    monkeypatch.setattr(
+        terminal_tool_module,
+        "reset_task_environment",
+        lambda task_id: reset_calls.append(task_id) or True,
+    )
+
+    result = await runner._handle_message(_make_event("/reset-terminal-sandbox"))
+
+    assert result == "Reset terminal sandbox for this session."
+    assert reset_calls == ["sess-1"]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_persists_agent_token_counts(monkeypatch):
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",

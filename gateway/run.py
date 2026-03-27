@@ -1724,6 +1724,9 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
+
+        if canonical == "reset-terminal-sandbox":
+            return await self._handle_reset_terminal_sandbox_command(event)
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
@@ -2945,6 +2948,17 @@ class GatewayRunner:
             return "⚡ Force-stopped. The session is unlocked — you can send a new message."
         else:
             return "No active task to stop."
+
+    async def _handle_reset_terminal_sandbox_command(self, event: MessageEvent) -> str:
+        """Handle /reset-terminal-sandbox for the current gateway session."""
+        from tools.terminal_tool import reset_task_environment
+
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+
+        if reset_task_environment(session_entry.session_id):
+            return "Reset terminal sandbox for this session."
+        return "No active terminal sandbox for this session."
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

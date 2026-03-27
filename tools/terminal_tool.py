@@ -400,6 +400,10 @@ _cleanup_running = False
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_modal_token_failure_markers = (
+    "token validation failed",
+    "token validation error",
+)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -428,6 +432,101 @@ def clear_task_env_overrides(task_id: str):
     Called during cleanup to avoid stale entries accumulating.
     """
     _task_env_overrides.pop(task_id, None)
+
+
+def _is_modal_token_validation_failure(message: Any) -> bool:
+    """Return True when Modal returned the known stale-token sandbox failure."""
+    if not message:
+        return False
+    lowered = str(message).lower()
+    return any(marker in lowered for marker in _modal_token_failure_markers)
+
+
+def reset_task_environment(task_id: str) -> bool:
+    """Drop the cached sandbox for a task and return whether one existed."""
+    with _env_lock:
+        had_environment = task_id in _active_environments
+    cleanup_vm(task_id)
+    return had_environment
+
+
+def _get_or_create_task_environment(
+    *,
+    task_id: str,
+    env_type: str,
+    image: str,
+    cwd: str,
+    timeout: int,
+    config: Dict[str, Any],
+):
+    """Return the active sandbox for a task, creating it if needed."""
+    with _env_lock:
+        env = _active_environments.get(task_id)
+        if env is not None:
+            _last_activity[task_id] = time.time()
+            return env
+
+    # Only one thread should build a sandbox for a task at a time.
+    with _creation_locks_lock:
+        if task_id not in _creation_locks:
+            _creation_locks[task_id] = threading.Lock()
+        task_lock = _creation_locks[task_id]
+
+    with task_lock:
+        with _env_lock:
+            env = _active_environments.get(task_id)
+            if env is not None:
+                _last_activity[task_id] = time.time()
+                return env
+
+        if env_type == "singularity":
+            _check_disk_usage_warning()
+        logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        container_config = None
+        if env_type in ("docker", "singularity", "modal", "daytona"):
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+            }
+
+        local_config = None
+        if env_type == "local":
+            local_config = {
+                "persistent": config.get("local_persistent", False),
+            }
+
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            ssh_config=ssh_config,
+            container_config=container_config,
+            local_config=local_config,
+            task_id=task_id,
+            host_cwd=config.get("host_cwd"),
+        )
+
+        with _env_lock:
+            _active_environments[task_id] = env
+            _last_activity[task_id] = time.time()
+        logger.info("%s environment ready for task %s", env_type, task_id[:8])
+        return env
 
 # Configuration from environment variables
 
@@ -907,89 +1006,22 @@ def terminal_tool(
         # Start cleanup thread
         _start_cleanup_thread()
 
-        # Get or create environment.
-        # Use a per-task creation lock so concurrent tool calls for the same
-        # task_id wait for the first one to finish creating the sandbox,
-        # instead of each creating their own (wasting Modal resources).
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                env = _active_environments[effective_task_id]
-                needs_creation = False
-            else:
-                needs_creation = True
-
-        if needs_creation:
-            # Per-task lock: only one thread creates the sandbox, others wait
-            with _creation_locks_lock:
-                if effective_task_id not in _creation_locks:
-                    _creation_locks[effective_task_id] = threading.Lock()
-                task_lock = _creation_locks[effective_task_id]
-
-            with task_lock:
-                # Double-check after acquiring the per-task lock
-                with _env_lock:
-                    if effective_task_id in _active_environments:
-                        _last_activity[effective_task_id] = time.time()
-                        env = _active_environments[effective_task_id]
-                        needs_creation = False
-
-                if needs_creation:
-                    if env_type == "singularity":
-                        _check_disk_usage_warning()
-                    logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
-                    try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
-                            }
-
-                        container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona"):
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                            }
-
-                        local_config = None
-                        if env_type == "local":
-                            local_config = {
-                                "persistent": config.get("local_persistent", False),
-                            }
-
-                        new_env = _create_environment(
-                            env_type=env_type,
-                            image=image,
-                            cwd=cwd,
-                            timeout=effective_timeout,
-                            ssh_config=ssh_config,
-                            container_config=container_config,
-                            local_config=local_config,
-                            task_id=effective_task_id,
-                            host_cwd=config.get("host_cwd"),
-                        )
-                    except ImportError as e:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": -1,
-                            "error": f"Terminal tool disabled: environment creation failed ({e})",
-                            "status": "disabled"
-                        }, ensure_ascii=False)
-
-                    with _env_lock:
-                        _active_environments[effective_task_id] = new_env
-                        _last_activity[effective_task_id] = time.time()
-                        env = new_env
-                    logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+        try:
+            env = _get_or_create_task_environment(
+                task_id=effective_task_id,
+                env_type=env_type,
+                image=image,
+                cwd=cwd,
+                timeout=effective_timeout,
+                config=config,
+            )
+        except ImportError as e:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Terminal tool disabled: environment creation failed ({e})",
+                "status": "disabled"
+            }, ensure_ascii=False)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
@@ -1102,6 +1134,7 @@ def terminal_tool(
             max_retries = 3
             retry_count = 0
             result = None
+            modal_reset_attempted = False
             
             while retry_count <= max_retries:
                 try:
@@ -1117,6 +1150,23 @@ def terminal_tool(
                             "exit_code": 124,
                             "error": f"Command timed out after {effective_timeout} seconds"
                         }, ensure_ascii=False)
+
+                    if env_type == "modal" and not modal_reset_attempted and _is_modal_token_validation_failure(e):
+                        logger.warning(
+                            "Modal sandbox token validation failed for task %s; resetting and retrying once",
+                            effective_task_id,
+                        )
+                        reset_task_environment(effective_task_id)
+                        env = _get_or_create_task_environment(
+                            task_id=effective_task_id,
+                            env_type=env_type,
+                            image=image,
+                            cwd=cwd,
+                            timeout=effective_timeout,
+                            config=config,
+                        )
+                        modal_reset_attempted = True
+                        continue
                     
                     # Retry on transient errors
                     if retry_count < max_retries:
@@ -1135,6 +1185,23 @@ def terminal_tool(
                         "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
                     }, ensure_ascii=False)
                 
+                if env_type == "modal" and not modal_reset_attempted and _is_modal_token_validation_failure(result.get("output")):
+                    logger.warning(
+                        "Modal sandbox token validation failed for task %s; resetting and retrying once",
+                        effective_task_id,
+                    )
+                    reset_task_environment(effective_task_id)
+                    env = _get_or_create_task_environment(
+                        task_id=effective_task_id,
+                        env_type=env_type,
+                        image=image,
+                        cwd=cwd,
+                        timeout=effective_timeout,
+                        config=config,
+                    )
+                    modal_reset_attempted = True
+                    continue
+
                 # Got a result
                 break
             
