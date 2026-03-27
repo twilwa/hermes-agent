@@ -482,6 +482,7 @@ from cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
+from tools.terminal_tool import reset_task_environment as _reset_terminal_sandbox
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
@@ -2488,6 +2489,13 @@ class HermesCLI:
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
+    def _handle_reset_terminal_sandbox_command(self):
+        """Handle /reset-terminal-sandbox for the current session."""
+        if _reset_terminal_sandbox(self.session_id):
+            self.console.print("  Reset terminal sandbox for this session.")
+            return
+        self.console.print("  No active terminal sandbox for this session.")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -3829,6 +3837,8 @@ class HermesCLI:
             self._handle_rollback_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
+        elif canonical == "reset-terminal-sandbox":
+            self._handle_reset_terminal_sandbox_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":

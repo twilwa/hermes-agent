@@ -10,6 +10,7 @@ Covers the bugs discovered while setting up TBLite evaluation:
 7. /home/ added to host prefix check
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -308,3 +309,60 @@ class TestHostPrefixList:
                 f"Host prefix {prefix!r} not found in _get_env_config. "
                 "Container backends need this to avoid using host paths."
             )
+
+
+class TestModalTokenRecovery:
+    """Verify Modal sandbox auth mismatches self-heal by recreating the sandbox."""
+
+    def test_modal_token_validation_failure_recreates_environment_and_retries(self, monkeypatch):
+        created_labels = []
+        cleaned_labels = []
+
+        class _FakeEnv:
+            def __init__(self, label: str, output: str, returncode: int):
+                self.label = label
+                self.output = output
+                self.returncode = returncode
+
+            def execute(self, command, **kwargs):
+                return {"output": self.output, "returncode": self.returncode}
+
+            def cleanup(self):
+                cleaned_labels.append(self.label)
+
+        envs = iter([
+            _FakeEnv("stale", "Token validation failed", 1),
+            _FakeEnv("fresh", "/root", 0),
+        ])
+
+        monkeypatch.setattr(_tt_mod, "_get_env_config", lambda: {
+            "env_type": "modal",
+            "modal_image": "swerex",
+            "cwd": "/root",
+            "timeout": 60,
+        })
+        monkeypatch.setattr(_tt_mod, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(_tt_mod, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
+
+        def _fake_create_environment(**kwargs):
+            env = next(envs)
+            created_labels.append(env.label)
+            return env
+
+        monkeypatch.setattr(_tt_mod, "_create_environment", _fake_create_environment)
+
+        _tt_mod._active_environments.clear()
+        _tt_mod._last_activity.clear()
+        _tt_mod._task_env_overrides.clear()
+
+        try:
+            result = json.loads(_tt_mod.terminal_tool(command="pwd", task_id="modal-retry"))
+            assert result["output"] == "/root"
+            assert result["exit_code"] == 0
+            assert created_labels == ["stale", "fresh"]
+            assert cleaned_labels == ["stale"]
+            assert _tt_mod._active_environments["modal-retry"].label == "fresh"
+        finally:
+            _tt_mod._active_environments.clear()
+            _tt_mod._last_activity.clear()
+            _tt_mod._task_env_overrides.clear()
