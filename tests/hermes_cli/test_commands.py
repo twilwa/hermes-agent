@@ -84,7 +84,6 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
-        assert resolve_command("reset-terminal-sandbox").name == "reset-terminal-sandbox"
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -161,10 +160,6 @@ class TestGatewayKnownCommands:
 
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
-
-    def test_excludes_reset_terminal_sandbox_when_cli_only(self):
-        assert "reset-terminal-sandbox" not in GATEWAY_KNOWN_COMMANDS
-
 
 class TestGatewayHelpLines:
     def test_returns_nonempty_list(self):
