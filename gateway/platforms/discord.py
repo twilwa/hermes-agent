@@ -1916,12 +1916,13 @@ class DiscordAdapter(BasePlatformAdapter):
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             voice_channels = {str(ch_id) for ch_id in self._voice_text_channels.values()}
-            channel_ids = {str(message.channel.id)}
+            current_channel_id = str(message.channel.id)
+            channel_ids = {current_channel_id}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            is_voice_linked_channel = bool(channel_ids & voice_channels)
+            is_voice_linked_channel = current_channel_id in voice_channels
             is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
 
             # Skip the mention check if the message is in a thread where

@@ -6,13 +6,14 @@ from pathlib import Path
 import yaml
 from gateway.modal_runtime import (
     ModalGatewayService,
+    _decode_base64_env,
     bootstrap_modal_home,
+    named_modal_secret_names,
     normalize_github_token_env,
     render_dashboard_html,
     sanitize_config_for_modal,
     sanitize_env_text_for_modal,
 )
-from scripts.modal_gateway import _named_secret_names
 
 
 def _b64(text: str) -> str:
@@ -106,18 +107,52 @@ def test_normalize_github_token_env_aliases_nonstandard_secret_keys(monkeypatch)
     assert os.environ["GH_TOKEN"] == "secret-value"
 
 
+def test_normalize_github_token_env_prefers_existing_github_token(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "canonical-token")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("github-token", "alternate-token")
+
+    normalize_github_token_env()
+
+    assert os.environ["GITHUB_TOKEN"] == "canonical-token"
+    assert os.environ["GH_TOKEN"] == "canonical-token"
+
+
+def test_normalize_github_token_env_prefers_existing_gh_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "canonical-token")
+    monkeypatch.setenv("github-token", "alternate-token")
+
+    normalize_github_token_env()
+
+    assert os.environ["GITHUB_TOKEN"] == "canonical-token"
+    assert os.environ["GH_TOKEN"] == "canonical-token"
+
+
 def test_named_secret_names_include_github_and_prime_by_default(monkeypatch):
     monkeypatch.delenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", raising=False)
     monkeypatch.delenv("HERMES_MODAL_PRIME_API_KEY_SECRET", raising=False)
 
-    assert _named_secret_names() == ["github-token", "PRIME_API_KEY"]
+    assert named_modal_secret_names() == ["github-token", "PRIME_API_KEY"]
 
 
 def test_named_secret_names_dedupe_and_skip_empty_values(monkeypatch):
     monkeypatch.setenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "shared-secret")
     monkeypatch.setenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "shared-secret")
 
-    assert _named_secret_names() == ["shared-secret"]
+    assert named_modal_secret_names() == ["shared-secret"]
+
+
+def test_decode_base64_env_returns_none_for_invalid_payload(monkeypatch):
+    monkeypatch.setenv("BROKEN_MODAL_ENV", "not-base64")
+
+    assert _decode_base64_env("BROKEN_MODAL_ENV") is None
+
+
+def test_decode_base64_env_returns_none_for_invalid_utf8(monkeypatch):
+    monkeypatch.setenv("BROKEN_MODAL_ENV", base64.b64encode(b"\xff").decode("utf-8"))
+
+    assert _decode_base64_env("BROKEN_MODAL_ENV") is None
 
 
 def test_sanitize_env_text_for_modal_drops_quoted_local_openai_base_url():

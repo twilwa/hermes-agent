@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import copy
 import html
 import json
@@ -29,6 +30,18 @@ _LOCAL_ONLY_ENV_KEYS = {
     "MESSAGING_CWD",
     "MODAL_CONFIG_PATH",
 }
+
+
+def named_modal_secret_names() -> list[str]:
+    """Return deploy-time named Modal secrets to attach to the gateway container."""
+    secret_names: list[str] = []
+    for value in (
+        os.getenv("HERMES_MODAL_GITHUB_TOKEN_SECRET", "github-token").strip(),
+        os.getenv("HERMES_MODAL_PRIME_API_KEY_SECRET", "PRIME_API_KEY").strip(),
+    ):
+        if value and value not in secret_names:
+            secret_names.append(value)
+    return secret_names
 
 
 def _utc_now_iso() -> str:
@@ -113,12 +126,24 @@ def _decode_base64_env(name: str) -> Optional[str]:
     payload = os.getenv(name, "").strip()
     if not payload:
         return None
-    return base64.b64decode(payload).decode("utf-8")
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+        return decoded.decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
 
 
 def normalize_github_token_env() -> None:
     """Alias common GitHub token secret keys to the names Hermes and gh expect."""
-    if os.environ.get("GITHUB_TOKEN") and os.environ.get("GH_TOKEN"):
+    github_token = os.environ.get("GITHUB_TOKEN")
+    gh_token = os.environ.get("GH_TOKEN")
+    if github_token and gh_token:
+        return
+    if github_token:
+        os.environ.setdefault("GH_TOKEN", github_token)
+        return
+    if gh_token:
+        os.environ.setdefault("GITHUB_TOKEN", gh_token)
         return
 
     token_value: Optional[str] = None
