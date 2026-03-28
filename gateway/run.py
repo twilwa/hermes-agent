@@ -3312,6 +3312,8 @@ class GatewayRunner:
 
         if success:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+            if hasattr(adapter, "_voice_sources"):
+                adapter._voice_sources[guild_id] = event.source.to_dict()
             self._voice_mode[event.source.chat_id] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=False)
@@ -3372,14 +3374,21 @@ class GatewayRunner:
         if not text_ch_id:
             return
 
+        source_data = getattr(adapter, "_voice_sources", {}).get(guild_id)
+        if source_data:
+            source = SessionSource.from_dict(source_data)
+            source.user_id = str(user_id)
+            source.user_name = str(user_id)
+        else:
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=str(text_ch_id),
+                user_id=str(user_id),
+                user_name=str(user_id),
+                chat_type="channel",
+            )
+
         # Check authorization before processing voice input
-        source = SessionSource(
-            platform=Platform.DISCORD,
-            chat_id=str(text_ch_id),
-            user_id=str(user_id),
-            user_name=str(user_id),
-            chat_type="channel",
-        )
         if not self._is_user_authorized(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
@@ -4676,16 +4685,14 @@ class GatewayRunner:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
 
-        from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
+        from tools.transcription_tools import transcribe_audio
         import asyncio
-
-        stt_model = get_stt_model_from_config()
 
         enriched_parts = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(transcribe_audio, path, model=stt_model)
+                result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(
@@ -5807,11 +5814,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
     
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            pass
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, signal_handler)
+            except NotImplementedError:
+                pass
+    else:
+        logger.info("Skipping signal handlers outside the main thread.")
     
     # Start the gateway
     success = await runner.start()

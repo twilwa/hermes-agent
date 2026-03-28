@@ -433,6 +433,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
+        self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
@@ -888,6 +889,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if task:
             task.cancel()
         self._voice_text_channels.pop(guild_id, None)
+        voice_sources = getattr(self, "_voice_sources", None)
+        if voice_sources is not None:
+            voice_sources.pop(guild_id, None)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -1102,9 +1106,8 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
-            stt_model = get_stt_model_from_config()
-            result = await asyncio.to_thread(transcribe_audio, wav_path, model=stt_model)
+            from tools.transcription_tools import transcribe_audio
+            result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
                 return
@@ -1912,12 +1915,15 @@ class DiscordAdapter(BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel):
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
-            channel_ids = {str(message.channel.id)}
+            voice_channels = {str(ch_id) for ch_id in self._voice_text_channels.values()}
+            current_channel_id = str(message.channel.id)
+            channel_ids = {current_channel_id}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            is_free_channel = bool(channel_ids & free_channels)
+            is_voice_linked_channel = current_channel_id in voice_channels
+            is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
@@ -1937,7 +1943,7 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread:
+            if auto_thread and not is_voice_linked_channel:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True

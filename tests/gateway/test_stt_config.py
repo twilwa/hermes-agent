@@ -75,3 +75,25 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
     assert "No STT provider is configured" not in result
     assert "trouble transcribing" in result
     assert "caption" in result
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_uses_provider_aware_stt_defaults():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "transcribed"},
+    ) as mock_transcribe:
+        result = await runner._enrich_message_with_transcription(
+            "",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert mock_transcribe.call_args.args == ("/tmp/voice.ogg",)
+    assert mock_transcribe.call_args.kwargs == {}
+    assert "transcribed" in result
