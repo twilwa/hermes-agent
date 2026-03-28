@@ -965,6 +965,7 @@ class TestDiscordVoiceChannelMethods:
         mock_vc.disconnect = AsyncMock()
         adapter._voice_clients[111] = mock_vc
         adapter._voice_text_channels[111] = 123
+        adapter._voice_sources = {111: {"chat_id": "123", "chat_type": "group"}}
 
         mock_receiver = MagicMock()
         adapter._voice_receivers[111] = mock_receiver
@@ -983,6 +984,7 @@ class TestDiscordVoiceChannelMethods:
         mock_timeout.cancel.assert_called_once()
         assert 111 not in adapter._voice_clients
         assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
         assert 111 not in adapter._voice_receivers
 
     @pytest.mark.asyncio
