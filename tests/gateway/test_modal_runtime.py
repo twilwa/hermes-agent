@@ -290,3 +290,22 @@ def test_modal_gateway_service_snapshot_reads_state_and_logs(tmp_path):
     assert "third line" in snapshot["gateway_log_tail"]
     assert "error line" in snapshot["error_log_tail"]
     assert snapshot["last_error"] is None
+
+
+def test_modal_gateway_service_records_bad_project_root(tmp_path):
+    hermes_home = Path(tmp_path)
+    commit_calls: list[str] = []
+    missing_root = hermes_home / "missing-project-root"
+
+    service = ModalGatewayService(
+        hermes_home=hermes_home,
+        project_root=str(missing_root),
+        commit_fn=lambda: commit_calls.append("commit"),
+    )
+
+    service._run_gateway()
+
+    assert service._last_error is not None
+    assert "FileNotFoundError" in service._last_error
+    assert str(missing_root) in service._last_error
+    assert commit_calls == ["commit"]

@@ -338,9 +338,9 @@ class ModalGatewayService:
         os.environ["HERMES_HOME"] = str(self.hermes_home)
         os.environ["HERMES_MODAL_HOSTED"] = "1"
         normalize_github_token_env()
-        os.chdir(self.project_root)
 
         try:
+            os.chdir(self.project_root)
             from gateway.run import start_gateway
 
             result = asyncio.run(start_gateway(replace=True))
