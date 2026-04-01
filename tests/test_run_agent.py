@@ -230,6 +230,27 @@ class TestStripThinkBlocks:
         assert "line1" not in result
         assert "visible" in result
 
+    def test_orphaned_closing_think_tag(self, agent):
+        result = agent._strip_think_blocks("some reasoning</think>actual answer")
+        assert "</think>" not in result
+        assert "actual answer" in result
+
+    def test_orphaned_closing_thinking_tag(self, agent):
+        result = agent._strip_think_blocks("reasoning</thinking>answer")
+        assert "</thinking>" not in result
+        assert "answer" in result
+
+    def test_orphaned_opening_think_tag(self, agent):
+        result = agent._strip_think_blocks("<think>orphaned reasoning without close")
+        assert "<think>" not in result
+
+    def test_mixed_orphaned_and_paired_tags(self, agent):
+        text = "stray</think><think>paired reasoning</think> visible"
+        result = agent._strip_think_blocks(text)
+        assert "</think>" not in result
+        assert "<think>" not in result
+        assert "visible" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
@@ -615,6 +636,132 @@ class TestBuildSystemPrompt:
         assert "SKILLS_PROMPT" in prompt
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+
+
+class TestToolUseEnforcementConfig:
+    """Tests for the agent.tool_use_enforcement config option."""
+
+    def _make_agent(self, model="openai/gpt-4.1", tool_use_enforcement="auto"):
+        """Create an agent with tools and a specific enforcement config."""
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_auto_injects_for_gpt(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_codex(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/codex-mini", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_skips_for_claude(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement=True)
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_string_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="true")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_always_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-r1", tool_use_enforcement="always")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_false_disables_for_gpt(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement=False)
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_string_false_disables(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="off")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_custom_list_matches(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="deepseek/deepseek-r1",
+            tool_use_enforcement=["deepseek", "gemini"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_custom_list_no_match(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-sonnet-4",
+            tool_use_enforcement=["deepseek", "gemini"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_custom_list_case_insensitive(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="openai/GPT-4.1",
+            tool_use_enforcement=["GPT", "Codex"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_no_tools_never_injects(self):
+        """Even with enforcement=true, no injection when agent has no tools."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=[],
+            )
+            a.client = MagicMock()
+            prompt = a._build_system_prompt()
+            assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
 class TestInvalidateSystemPrompt:
@@ -1645,6 +1792,127 @@ class TestNousCredentialRefresh:
         assert isinstance(agent.client, _RebuiltClient)
 
 
+class TestCredentialPoolRecovery:
+    def test_recover_with_pool_rotates_on_402(self, agent):
+        current = SimpleNamespace(label="primary")
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def current(self):
+                return current
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 402
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=402,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_retries_first_429_then_rotates(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def current(self):
+                return SimpleNamespace(label="primary")
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 429
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+        )
+        assert recovered is False
+        assert retry_same is True
+        agent._swap_credential.assert_not_called()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=True,
+        )
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+
+    def test_recover_with_pool_refreshes_on_401(self, agent):
+        """401 with successful refresh should swap to refreshed credential."""
+        refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        agent._swap_credential.assert_called_once_with(refreshed_entry)
+
+    def test_recover_with_pool_rotates_on_401_when_refresh_fails(self, agent):
+        """401 with failed refresh should rotate to next credential."""
+        next_entry = SimpleNamespace(label="secondary", id="def")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None  # refresh failed
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 401
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_401_refresh_fails_no_more_credentials(self, agent):
+        """401 with failed refresh and no other credentials returns not recovered."""
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                return None  # no more credentials
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is False
+        agent._swap_credential.assert_not_called()
+
+
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
 
@@ -2381,6 +2649,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_sets_api_mode(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2402,6 +2672,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2419,6 +2691,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -2666,6 +2940,50 @@ class TestStreamingApiCall:
         assert len(tc) == 2
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
+
+    def test_ollama_reused_index_separate_tool_calls(self, agent):
+        """Ollama sends every tool call at index 0 with different ids.
+
+        Without the fix, names and arguments get concatenated into one slot.
+        """
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":"hello"}')]),
+            # Second tool call at the SAME index 0, but different id
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read_file", '{"path":"x.py"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2, f"Expected 2 tool calls, got {len(tc)}: {[t.function.name for t in tc]}"
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[0].id == "call_a"
+        assert tc[1].function.name == "read_file"
+        assert tc[1].function.arguments == '{"path":"x.py"}'
+        assert tc[1].id == "call_b"
+
+    def test_ollama_reused_index_streamed_args(self, agent):
+        """Ollama with streamed arguments across multiple chunks at same index."""
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"hello"}')]),
+            # New tool call, same index 0
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read", '{}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[1].function.name == "read"
+        assert tc[1].function.arguments == '{}'
 
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
@@ -3068,6 +3386,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -3089,6 +3409,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"

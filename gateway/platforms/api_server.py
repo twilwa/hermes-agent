@@ -166,7 +166,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
 }
 
 
@@ -222,6 +222,23 @@ if AIOHTTP_AVAILABLE:
         return await handler(request)
 else:
     body_limit_middleware = None  # type: ignore[assignment]
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def security_headers_middleware(request, handler):
+        """Add security headers to all responses (including errors)."""
+        response = await handler(request)
+        for k, v in _SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        return response
+else:
+    security_headers_middleware = None  # type: ignore[assignment]
 
 
 class _IdempotencyCache:
@@ -307,6 +324,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if "*" in self._cors_origins:
             headers = dict(_CORS_HEADERS)
             headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Max-Age"] = "600"
             return headers
 
         if origin not in self._cors_origins:
@@ -315,6 +333,7 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = dict(_CORS_HEADERS)
         headers["Access-Control-Allow-Origin"] = origin
         headers["Vary"] = "Origin"
+        headers["Access-Control-Max-Age"] = "600"
         return headers
 
     def _origin_allowed(self, origin: str) -> bool:
@@ -361,6 +380,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -393,6 +413,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            tool_progress_callback=tool_progress_callback,
         )
         return agent
 
@@ -495,6 +516,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_tool_progress(name, preview, args):
+                """Inject tool progress into the SSE stream for Open WebUI."""
+                if name.startswith("_"):
+                    return  # Skip internal events (_thinking)
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(name)
+                label = preview or name
+                _stream_q.put(f"\n`{emoji} {label}`\n")
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -504,6 +534,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
             ))
 
@@ -582,10 +613,14 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         import queue as _q
 
-        response = web.StreamResponse(
-            status=200,
-            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
-        )
+        sse_headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front.
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
         try:
@@ -1171,6 +1206,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
         agent_ref: Optional[list] = None,
     ) -> tuple:
         """
@@ -1191,6 +1227,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                tool_progress_callback=tool_progress_callback,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -1218,10 +1255,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware) if mw is not None]
+            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
@@ -1236,6 +1274,17 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+
+            # Port conflict detection — fail fast if port is already in use
+            import socket as _socket
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                    _s.settimeout(1)
+                    _s.connect(('127.0.0.1', self._port))
+                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
